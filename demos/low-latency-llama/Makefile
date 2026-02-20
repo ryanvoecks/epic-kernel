@@ -8,13 +8,19 @@ endif
 TARGET=mk_llama
 SRC=llama.cu
 
-# Python version configuration
-ifndef PYTHON_VERSION
-PYTHON_VERSION=3.13
-endif
+# Get the extension suffix directly from the active Python interpreter
+# (This avoids the python3-config system leakage)
+EXT_SUFFIX := $(shell python3 -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
-NVCCFLAGS=-DNDEBUG -Xcompiler=-fPIE --expt-extended-lambda --expt-relaxed-constexpr -Xcompiler=-Wno-psabi -Xcompiler=-fno-strict-aliasing --use_fast_math -forward-unknown-to-host-compiler -O3 -Xnvlink=--verbose -Xptxas=--verbose -Xptxas=--warn-on-spills -std=c++20 -x cu -lrt -lpthread -ldl -lcuda -lcudadevrt -lcudart_static -lcublas -lineinfo
-NVCCFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${MEGAKERNELS_ROOT}/include $(shell python3 -m pybind11 --includes) $(shell python3-config --ldflags) -shared -fPIC -lpython${PYTHON_VERSION}
+NVCCFLAGS=-DNDEBUG -Xcompiler=-fPIE --expt-extended-lambda --expt-relaxed-constexpr \
+    -Xcompiler=-Wno-psabi -Xcompiler=-fno-strict-aliasing --use_fast_math \
+    -forward-unknown-to-host-compiler -O3 -Xnvlink=--verbose -Xptxas=--verbose \
+    -Xptxas=--warn-on-spills -std=c++20 -x cu -lrt -lpthread -ldl -lcuda \
+    -lcudadevrt -lcudart_static -lcublas -lineinfo
+
+# Removed `python3-config --ldflags` and `-lpython${PYTHON_VERSION}`
+NVCCFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${MEGAKERNELS_ROOT}/include \
+    $(shell python3 -m pybind11 --includes) -shared -fPIC
 
 # Conditional setup based on the target GPU
 ifeq ($(GPU),4090)
@@ -30,12 +36,9 @@ endif
 # Default target
 all: $(TARGET)
 
-# run: $(TARGET)
-# 	python test.py
-
 $(TARGET): $(SRC)
-	$(NVCC) $(SRC) $(NVCCFLAGS) -o $(TARGET)$(shell python3-config --extension-suffix)
+	$(NVCC) $(SRC) $(NVCCFLAGS) -o $(TARGET)$(EXT_SUFFIX)
 
 # Clean target
 clean:
-	rm -f $(TARGET)$(shell python3-config --extension-suffix)
+	rm -f $(TARGET)*.so
