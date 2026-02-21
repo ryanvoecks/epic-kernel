@@ -31,8 +31,8 @@ class ScriptConfig(pydra.Config):
     mode: str = "model"
     interleave_rope: bool = True
     mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
-    num_warmup: int = 5
-    num_iters: int = 10
+    num_warmup: int = 10
+    num_iters: int = 30
     barrier_fill_val: int = 0
     batch_size: int = 1
     max_len_override: int | None = 16384
@@ -86,14 +86,9 @@ def main(config: ScriptConfig):
         position_ids=position_ids,
     )
 
-    prefill_output: BatchState = model(prefill_inp)
-    assert prefill_output.output_ids is not None
-    new_input_token = prefill_output.output_ids[:, -1:]
-
     output_tokens = torch.zeros(
         config.batch_size, config.output_tokens, device=model.device, dtype=torch.long
     )
-    output_tokens[:, 0] = new_input_token
 
     schedule_builder = make_schedule_builder(config.setting)
     schedule = schedule_builder.build(model)
@@ -123,29 +118,47 @@ def main(config: ScriptConfig):
         case _:
             raise ValueError(f"Invalid mode: {config.mode}")
 
-    times = []
-    cpu_times = []
+    # Measure end-to-end latency: prefill + all decode steps (matches vLLM benchmark
+    # methodology). Primary metric is wall-clock time via time.perf_counter(); GPU
+    # event timing is recorded as a secondary metric.
+    latencies = []
+    gpu_latencies = []
     for _ in tqdm(range(config.num_warmup + config.num_iters)):
+        output_tokens.zero_()
+
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
+
         start_event.record()
-        cpu_start = time.time()
+        start = time.perf_counter()
+
+        prefill_output: BatchState = model(prefill_inp)
+        assert prefill_output.output_ids is not None
+        output_tokens[:, 0] = prefill_output.output_ids[:, -1:]
+
         gen.generate(output_tokens, prompt_len, config.output_tokens - 1)
-        cpu_end = time.time()
+
         end_event.record()
         torch.cuda.synchronize()
-        times.append(start_event.elapsed_time(end_event) / 1000)
-        cpu_times.append(cpu_end - cpu_start)
+        end = time.perf_counter()
 
-    non_warmup_times = times[config.num_warmup :]
-    non_warmup_cpu_times = cpu_times[config.num_warmup :]
-    elapsed = sum(non_warmup_times) / len(non_warmup_times)
-    elapsed_cpu = sum(non_warmup_cpu_times) / len(non_warmup_cpu_times)
-    print(f"Average time: {(elapsed * 1000):.2f}ms (CPU: {(elapsed_cpu * 1000):.2f}ms)")
+        latencies.append(end - start)
+        gpu_latencies.append(start_event.elapsed_time(end_event) / 1000)
 
-    fwd_per_second = (config.output_tokens - 1) / elapsed
-    print(f"Fwd per second: {fwd_per_second:.2f}")
-    tokens_per_second = config.batch_size * fwd_per_second
+    latencies = latencies[config.num_warmup :]
+    gpu_latencies = gpu_latencies[config.num_warmup :]
+
+    avg_latency = sum(latencies) / len(latencies)
+    avg_gpu_latency = sum(gpu_latencies) / len(gpu_latencies)
+    print(f"Avg latency: {avg_latency * 1000:.2f}ms (GPU: {avg_gpu_latency * 1000:.2f}ms)")
+
+    sorted_latencies = sorted(latencies)
+    n = len(sorted_latencies)
+    for p in [10, 25, 50, 75, 90, 99]:
+        idx = min(int(p / 100 * n), n - 1)
+        print(f"  p{p}: {sorted_latencies[idx] * 1000:.2f}ms")
+
+    tokens_per_second = config.batch_size * config.output_tokens / avg_latency
     print(f"Tokens per second: {tokens_per_second:.2f}")
 
 
