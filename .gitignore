@@ -2,11 +2,15 @@ local/
 __pycache__/
 *.egg-info/
 
-*.so
+*.cubin
+*.fatbin
+*.gpu
+*.html
 *.i
 *.ii
-*.gpu
+*.pkl
 *.ptx
 *.cubin
 *.fatbin
 uv.lock
+*.so
