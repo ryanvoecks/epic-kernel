@@ -10,4 +10,7 @@ __pycache__/
 *.ii
 *.pkl
 *.ptx
+*.cubin
+*.fatbin
+uv.lock
 *.so
