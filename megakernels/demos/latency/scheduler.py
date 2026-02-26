@@ -3,6 +3,7 @@ import math
 import torch
 
 from megakernels.demos.latency.instructions import (
+    AttentionReduction,
     DownProjResidual,
     Globals,
     Instruction,
@@ -273,8 +274,10 @@ def make_dag_layer(
     prev_layer_outputs: list[DAG_Node],
     stop_after_op: str | None = None,
 ):
-    assert globs.skip_attn_reduction
-    num_attention_partitions = 1
+    max_seq_len = globs.k_cache.shape[2]
+    num_attention_partitions = pick_num_attention_partitions(max_seq_len, 0, globs.device)
+    # num_attention_partitions = 2 # temp hardcode
+    globs.skip_attn_reduction = num_attention_partitions == 1
 
     new_nodes: list[DAG_Node] = []
 
@@ -340,6 +343,26 @@ def make_dag_layer(
     if stop_after_op == "partial":
         return new_nodes, partial_nodes
 
+    # reduction (skipped when num_attention_partitions == 1)
+    gqa_ratio = globs.num_attention_heads // globs.num_kv_heads
+    if num_attention_partitions > 1:
+        reduction_nodes: list[DAG_Node] = []
+        for kv_head_idx in range(globs.num_kv_heads):
+            ins = AttentionReduction(
+                layer_idx=layer_idx,
+                head_start_idx=kv_head_idx * gqa_ratio,
+                num_partials=num_attention_partitions,
+                is_terminal=True,
+                reduction_list=list(range(num_attention_partitions)),
+                output_partial_idx=None,
+            )
+            deps = [n for n in partial_nodes if n.instruction.kv_head_idx == kv_head_idx]
+            reduction_nodes.append(DAG_Node(ins, deps))
+        new_nodes.extend(reduction_nodes)
+        o_proj_deps = reduction_nodes
+    else:
+        o_proj_deps = partial_nodes
+
     # oproj
     num_o_blocks = assert_div(globs.hidden_size, globs.o_proj_block_size)
     o_proj_nodes: list[DAG_Node] = []
@@ -351,7 +374,7 @@ def make_dag_layer(
             reduction_block_idx=0,
         )
 
-        o_proj_nodes.append(DAG_Node(ins, partial_nodes))
+        o_proj_nodes.append(DAG_Node(ins, o_proj_deps))
 
     new_nodes.extend(o_proj_nodes)
 

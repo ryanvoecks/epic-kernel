@@ -461,7 +461,7 @@ template <typename config, typename globals> struct attention_partial {
 
                 // Run the pipeline!
                 for (int i = 0; i + start_blk_idx < end_blk_idx; ++i) {
-                    int stage = i % NUM_STAGES;
+                    int stage = (start_blk_idx + i) % NUM_STAGES;
                     kv_st &K_smem = get_K_smem(s, stage);
                     kv_st &V_smem = get_V_smem(s, stage);
 
@@ -584,7 +584,7 @@ template <typename config, typename globals> struct attention_partial {
         store_o_no_skip(const globals &g, megakernel::state<config> &s,
                         int q_head_start_idx, parsed_instruction &inst) {
             // Store partial attention output to global memory
-            if (laneid == 0) {
+            if (kittens::laneid() == 0) {
                 o_sv(&O_smem)[GQA_RATIO] = get_O_smem(s);
                 kittens::wait(O_arrived(s), 0);
                 s.record(megakernel::TEVENT_OUTPUT_READY);
