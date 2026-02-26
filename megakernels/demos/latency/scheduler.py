@@ -38,11 +38,16 @@ def pick_num_attention_partitions(prompt_len: int, ntok: int, device: torch.devi
 
 def make_globals(
     model: LlamaForCausalLM,
-    skip_attn_reduction: bool = True,
+    skip_attn_reduction: bool | None = None,
 ):
     config = model.config
     device = model.device
     dtype = model.dtype
+
+    if skip_attn_reduction is None:
+        max_seq_len = model.stacked_kv_cache[0].shape[2]
+        num_partitions = pick_num_attention_partitions(max_seq_len, 0, device)
+        skip_attn_reduction = num_partitions == 1
 
     def make_buffer(shape, buffer_dtype=dtype):
         return torch.zeros(shape, device=device, dtype=buffer_dtype)

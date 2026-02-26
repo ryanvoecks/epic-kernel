@@ -639,7 +639,7 @@ template <typename config, typename globals> struct attention_partial {
                              : "l"(dst_ptr), "f"(tmp));
             }
             kittens::warp::sync(); // ensure all writes are committed
-            // asm volatile("fence.acq_rel.gpu;");
+            asm volatile("fence.acq_rel.gpu;");
 
             kittens::tma::store_async_wait();
             if (laneid == 0) {
