@@ -21,9 +21,9 @@ First, to compile the megakernel, run:
 export THUNDERKITTENS_ROOT=$(pwd)/ThunderKittens
 export MEGAKERNELS_ROOT=$(pwd)
 export PYTHON_VERSION=3.12 # adjust if yours is different
-export GPU=H100 # options are {H100, B200}, else defaults to B200
+export GPU=B200 # options are {H100, B200}, else defaults to B200
 cd demos/low-latency-llama
-make
+uv run make
 
 ```
 
