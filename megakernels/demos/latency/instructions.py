@@ -101,6 +101,10 @@ class AttentionReduction(Instruction):
     def prev_opcode(cls) -> int:
         return PartialAttention.opcode()
 
+    def cost(self, globs: Globals):
+        gqa_ratio = globs.num_attention_heads // globs.num_kv_heads
+        return gqa_ratio * self.num_partials * globs.head_dim
+
 
 @dataclass
 class MatVecAdd(Instruction):
