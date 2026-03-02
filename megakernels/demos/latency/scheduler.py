@@ -19,17 +19,14 @@ from megakernels.scheduler import DAG_Node, ScheduleBuilder
 from megakernels.utils import assert_div, get_sm_count
 
 
-def pick_num_attention_partitions(prompt_len: int, ntok: int, device: torch.device):
+def pick_num_attention_partitions(prompt_len: int, ntok: int, num_kv_heads: int, device: torch.device):
     min_chunk_size = 256
     full_len = prompt_len + ntok
 
     num_divisions = math.ceil(full_len / min_chunk_size)
 
-    # TODO limitation until we have a better reduction tree
-    num_attention_partitions = min(num_divisions, 24)
-
-    # sm_count = get_sm_count(device)
-    # num_attention_partitions = min(sm_count, num_divisions)
+    sm_count = get_sm_count(device)
+    num_attention_partitions = min(num_divisions, sm_count // num_kv_heads)
 
     assert num_attention_partitions >= 1
 
@@ -46,7 +43,7 @@ def make_globals(
 
     if skip_attn_reduction is None:
         max_seq_len = model.stacked_kv_cache[0].shape[2]
-        num_partitions = pick_num_attention_partitions(max_seq_len, 0, device)
+        num_partitions = pick_num_attention_partitions(max_seq_len, 0, model.num_kv_heads(), device)
         skip_attn_reduction = num_partitions == 1
 
     def make_buffer(shape, buffer_dtype=dtype):
@@ -280,7 +277,7 @@ def make_dag_layer(
     stop_after_op: str | None = None,
 ):
     max_seq_len = globs.k_cache.shape[2]
-    num_attention_partitions = pick_num_attention_partitions(max_seq_len, 0, globs.device)
+    num_attention_partitions = pick_num_attention_partitions(max_seq_len, 0, globs.num_kv_heads, globs.device)
     # num_attention_partitions = 2 # temp hardcode
     globs.skip_attn_reduction = num_attention_partitions == 1
 
