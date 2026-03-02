@@ -6,6 +6,7 @@ TARGET ?= mk_llama
 # Key paths
 export MEGAKERNELS_ROOT = $(CURDIR)
 export THUNDERKITTENS_ROOT = $(MEGAKERNELS_ROOT)/ThunderKittens
+export PYTHON = uv run python
 
 # Default target
 all: $(TARGET)
