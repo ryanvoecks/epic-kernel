@@ -22,17 +22,17 @@ make
 To start an interactive chat session with the model, run:
 
 ```bash
-
-# from the repo root
-python megakernels/scripts/llama_repl.py
-
+uv run megakernels/scripts/llama_repl.py
 ```
 
 To benchmark the megakernel, run:
 
 ```bash
+uv run megakernels/scripts/benchmark.py mode=mk input_tokens=128 output_tokens=128
+```
 
-# from the repo root
-python megakernels/scripts/generate.py mode=mk prompt="tell me a funny joke about cookies" ntok=100
+To perform a regression sweep across different sequence lengths, run:
 
+```bash
+uv run megakernels/scripts/regression.py
 ```
