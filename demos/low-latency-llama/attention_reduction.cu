@@ -180,19 +180,25 @@ template <typename Config, typename Globals> struct attention_reduction {
 
                 parsed_instruction inst{s};
 
+                // Wait until all partial attention outputs are ready in global memory
                 s.record(megakernel::TEVENT_AT_GMEM_WAIT);
-                while (*(volatile int *)&g.Bar[{inst.layer_idx, prev_opcode - 1,
-                                                inst.q_head_start_idx + 0}] <
-                           inst.num_partials ||
-                       *(volatile int *)&g.Bar[{inst.layer_idx, prev_opcode - 1,
-                                                inst.q_head_start_idx + 1}] <
-                           inst.num_partials ||
-                       *(volatile int *)&g.Bar[{inst.layer_idx, prev_opcode - 1,
-                                                inst.q_head_start_idx + 2}] <
-                           inst.num_partials ||
-                       *(volatile int *)&g.Bar[{inst.layer_idx, prev_opcode - 1,
-                                                inst.q_head_start_idx + 3}] <
-                           inst.num_partials) {
+                while (true) {
+                    bool inputs_ready = true;
+                    for (int i = 0; i < Q_HEADS_PER_INSTRUCTION; i++) {
+                        const kittens::coord<> barrier_idx = {
+                            inst.layer_idx,
+                            prev_opcode - 1,
+                            inst.q_head_start_idx + i
+                        };
+                        const uint8_t partials_done = megakernel::gmem_read(&g.Bar[barrier_idx]);
+                        if (partials_done < inst.num_partials) {
+                            inputs_ready = false;
+                            break;
+                        }
+                    }
+                    if (inputs_ready) {
+                        break;
+                    }
                     __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
                 }
                 s.record(megakernel::TEVENT_DONE_GMEM_WAIT);

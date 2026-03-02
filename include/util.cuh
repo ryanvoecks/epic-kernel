@@ -18,6 +18,12 @@ template <typename config> struct __align__(128) instruction_state_t {
     int scratch[config::SCRATCH_BYTES / 4];
 };
 
+// Force a read from global memory
+template <typename T>
+__device__ inline T gmem_read(const T *addr) {
+    return *(volatile T *)addr;
+}
+
 __device__ inline unsigned int get_smid() {
     unsigned int ret;
     asm volatile("mov.u32 %0, %smid;" : "=r"(ret));
