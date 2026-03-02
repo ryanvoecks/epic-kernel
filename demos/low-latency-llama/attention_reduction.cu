@@ -173,12 +173,12 @@ template <typename Config, typename Globals> struct attention_reduction {
     struct launcher {
         static __device__ void run(const Globals &g, megakernel::state<Config> &s) {
             if (kittens::warp::laneid() == 0) {
-#ifdef KITTENS_BLACKWELL
+                // Immediately release tensor engine for next instruction (unused)
                 s.wait_tensor_ready();
                 arrive(s.tensor_finished, Config::NUM_CONSUMER_WARPS);
-#endif
 
-                parsed_instruction inst{s};
+                // Instruction details
+                const parsed_instruction inst{s};
 
                 // Wait until all partial attention outputs are ready in global memory
                 s.record(megakernel::TEVENT_AT_GMEM_WAIT);
@@ -203,31 +203,44 @@ template <typename Config, typename Globals> struct attention_reduction {
                 }
                 s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
 
-                for (int i = 0; i < 4; ++i) {
-                    l_partial_sv &L_smem = get_L_partial_smem(s, i);
+                // Async load of log-sum-exponent intermediates from Q heads into SMEM
+                for (int i = 0; i < Q_HEADS_PER_INSTRUCTION; i++) {
+                    l_partial_sv& L_smem = get_L_partial_smem(s, i);
+                    const kittens::coord<> q_head_idx = {0, 0, inst.q_head_start_idx + i, 0};
                     kittens::tma::expect(L_partial_all_arrived(s, i), L_smem);
                     kittens::tma::load_async<cache_policy::EVICT_FIRST>(
-                        L_smem, g.attn_lse_intermediates,
-                        {0, 0, inst.q_head_start_idx + i, 0},
-                        L_partial_all_arrived(s, i));
+                        L_smem, g.attn_lse_intermediates, q_head_idx, L_partial_all_arrived(s, i));
                 }
 
+                // Load output intermediates from each partial attention contributor
+                // Load across multiple stages to avoid having all intermediates in SMEM at once
                 for (int i = 0; i < inst.num_partials; ++i) {
-                    int stage = i % NUM_STAGES;
-                    int cur_partial_idx = inst.reduction_list[i];
-                    for (int j = 0; j < 4; ++j) {
-                        o_sv &O_smem = get_O_partial_smem(s, j, stage);
+                    const uint8_t stage = i % NUM_STAGES;
+                    const uint8_t cur_partial_idx = inst.reduction_list[i];
 
+                    for (int j = 0; j < Q_HEADS_PER_INSTRUCTION; ++j) {
+                        o_sv& O_smem = get_O_partial_smem(s, j, stage);
+
+                        // Wait until SMEM target block is ready (previous stage is done)
                         if (i >= NUM_STAGES) {
-                            int prev_phase = (i / NUM_STAGES - 1) % 2;
+                            const uint8_t prev_phase = (i / NUM_STAGES - 1) % 2;
                             kittens::wait(O_partial_finished(s, j, stage), prev_phase);
                         }
 
+                        // Load partial attention output intermediates to SMEM block
+                        const kittens::coord<> partial_o_idx = {
+                            0,
+                            inst.q_head_start_idx + j,
+                            cur_partial_idx,
+                            0
+                        };
                         kittens::tma::expect(O_partial_arrived(s, j, stage), O_smem);
                         kittens::tma::load_async<cache_policy::EVICT_FIRST>(
-                            O_smem, g.attn_out_intermediates,
-                            {0, inst.q_head_start_idx + j, cur_partial_idx, 0},
-                            O_partial_arrived(s, j, stage));
+                            O_smem,
+                            g.attn_out_intermediates,
+                            partial_o_idx,
+                            O_partial_arrived(s, j, stage)
+                        );
                     }
                 }
             }
