@@ -1,25 +1,18 @@
-# Compiler
-NVCC?=nvcc
-
-ifndef GPU
-GPU=B200
-endif
-
-TARGET=mk_llama
-SRC=llama.cu
+# Config
+NVCC ?= nvcc
+GPU ?= B200
+TARGET = mk_llama
+SRC = llama.cu
 
 # Get the extension suffix directly from the active Python interpreter
-# (This avoids the python3-config system leakage)
 EXT_SUFFIX := $(shell python3 -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 
 NVCCFLAGS=-DNDEBUG -Xcompiler=-fPIE --expt-extended-lambda --expt-relaxed-constexpr \
     -Xcompiler=-Wno-psabi -Xcompiler=-fno-strict-aliasing --use_fast_math \
     -forward-unknown-to-host-compiler -O3 -Xnvlink=--verbose -Xptxas=--verbose \
     -Xptxas=--warn-on-spills -std=c++20 -x cu -lrt -lpthread -ldl -lcuda \
-    -lcudadevrt -lcudart_static -lcublas -lineinfo
-
-# Removed `python3-config --ldflags` and `-lpython${PYTHON_VERSION}`
-NVCCFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${MEGAKERNELS_ROOT}/include \
+    -lcudadevrt -lcudart_static -lcublas -lineinfo -I${THUNDERKITTENS_ROOT}/include \
+    -I${MEGAKERNELS_ROOT}/include \
     $(shell python3 -m pybind11 --includes) -shared -fPIC
 
 # Conditional setup based on the target GPU
