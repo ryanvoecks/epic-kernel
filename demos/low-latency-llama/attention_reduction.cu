@@ -18,9 +18,22 @@ using o_final_sv = kittens::sv_bf<globals::head_dim>;
 template <typename Config, typename Globals> struct attention_reduction {
     static constexpr int opcode = OPCODE_AttentionReduction;
     static constexpr int prev_opcode = OPCODE_PartialAttention;
-    static constexpr int NUM_STAGES = 2;
-    static_assert(NUM_STAGES <= 2,
-                  "Reduction NUM_STAGES must be less than or equal to 2");
+    // SMEM constraints: fixed per-head overhead + stages x o_sv per head <= PAGE_SIZE
+    static constexpr int smem_per_stage = Q_HEADS_PER_INSTRUCTION * (int)sizeof(o_sv);
+    static constexpr int smem_fixed =
+        Q_HEADS_PER_INSTRUCTION * ((int)sizeof(l_partial_sv) + (int)sizeof(o_final_sv));
+    static constexpr int smem_max_stages =
+        (Config::PAGE_SIZE - smem_fixed) / smem_per_stage;
+
+    // Semaphore constraints: O uses 2 per stage (per-stage semaphores shared across heads),
+    // plus 3 per head (L arrived/finished, final_O ready).
+    static constexpr int sem_max_stages =
+        (Config::DYNAMIC_SEMAPHORES - Q_HEADS_PER_INSTRUCTION * 3) / 2;
+
+    static constexpr int NUM_STAGES =
+        smem_max_stages <= sem_max_stages
+            ? (smem_max_stages <= MAX_ATTN_PARTIALS ? smem_max_stages : MAX_ATTN_PARTIALS)
+            : (sem_max_stages <= MAX_ATTN_PARTIALS ? sem_max_stages : MAX_ATTN_PARTIALS);
 
     struct parsed_instruction {
         int layer_idx;
@@ -47,30 +60,30 @@ template <typename Config, typename Globals> struct attention_reduction {
     };
 
     // --- kittens::semaphore Access Helpers ---
+    // O semaphores are per-stage (shared across all Q heads): 2 * NUM_STAGES total.
+    // Each O_partial_arrived is expected by Q_HEADS_PER_INSTRUCTION TMA loads;
+    // each O_partial_finished is arrived at by Q_HEADS_PER_INSTRUCTION consumer warps.
     __device__ static constexpr int
-    O_partial_sem_idx(int q_head_local_idx, int stage, bool is_finished) {
-        return q_head_local_idx * (NUM_STAGES * 2) + stage * 2 +
-               (is_finished ? 1 : 0);
+    O_partial_sem_idx(int stage, bool is_finished) {
+        return stage * 2 + (is_finished ? 1 : 0);
     }
+    // Per-head semaphores follow: 3 per head (L arrived, L finished, final_O ready)
     __device__ static constexpr int L_partial_sem_idx(int q_head_local_idx,
                                                       bool is_finished) {
-        return (Q_HEADS_PER_INSTRUCTION * NUM_STAGES * 2) +
-               q_head_local_idx * 2 + (is_finished ? 1 : 0);
+        return NUM_STAGES * 2 + q_head_local_idx * 3 + (is_finished ? 1 : 0);
     }
     __device__ static constexpr int
     Final_O_ready_sem_idx(int q_head_local_idx) {
-        return (Q_HEADS_PER_INSTRUCTION * NUM_STAGES * 2) +
-               (Q_HEADS_PER_INSTRUCTION * 2) + q_head_local_idx;
+        return NUM_STAGES * 2 + q_head_local_idx * 3 + 2;
     }
 
     __device__ static inline kittens::semaphore &
-    O_partial_arrived(megakernel::state<config> &s, int q_head_local_idx, int stage) {
-        return s
-            .semaphores()[O_partial_sem_idx(q_head_local_idx, stage, false)];
+    O_partial_arrived(megakernel::state<config> &s, int stage) {
+        return s.semaphores()[O_partial_sem_idx(stage, false)];
     }
     __device__ static inline kittens::semaphore &
-    O_partial_finished(megakernel::state<config> &s, int q_head_local_idx, int stage) {
-        return s.semaphores()[O_partial_sem_idx(q_head_local_idx, stage, true)];
+    O_partial_finished(megakernel::state<config> &s, int stage) {
+        return s.semaphores()[O_partial_sem_idx(stage, true)];
     }
     __device__ static inline kittens::semaphore &
     L_partial_all_arrived(megakernel::state<config> &s, int q_head_local_idx) {
@@ -142,17 +155,19 @@ template <typename Config, typename Globals> struct attention_reduction {
         }
         static __device__ int init_semaphores(const Globals &g,
                                               megakernel::state<Config> &s) {
+            // O semaphores are per-stage: Q_HEADS_PER_INSTRUCTION TMA loads arrive
+            // at O_partial_arrived, and Q_HEADS_PER_INSTRUCTION consumer warps
+            // arrive at O_partial_finished.
+            for (int stage = 0; stage < NUM_STAGES; stage++) {
+                init_semaphore(O_partial_arrived(s, stage), 0, Q_HEADS_PER_INSTRUCTION);
+                init_semaphore(O_partial_finished(s, stage), 0, Q_HEADS_PER_INSTRUCTION);
+            }
             for (int q_head = 0; q_head < Q_HEADS_PER_INSTRUCTION; ++q_head) {
-                for (int stage = 0; stage < NUM_STAGES; stage++) {
-                    init_semaphore(O_partial_arrived(s, q_head, stage), 0, 1);
-                    init_semaphore(O_partial_finished(s, q_head, stage), 0, 1);
-                }
                 init_semaphore(L_partial_all_arrived(s, q_head), 0, 1);
                 init_semaphore(L_partial_all_finished(s, q_head), 0, 1);
-
                 init_semaphore(final_O_ready(s, q_head), 0, 1);
             }
-            return 4 * ((NUM_STAGES * 2) + 3);
+            return NUM_STAGES * 2 + Q_HEADS_PER_INSTRUCTION * 3;
         }
     };
 
@@ -212,34 +227,35 @@ template <typename Config, typename Globals> struct attention_reduction {
                         L_smem, g.attn_lse_intermediates, q_head_idx, L_partial_all_arrived(s, i));
                 }
 
-                // Load output intermediates from each partial attention contributor
-                // Load across multiple stages to avoid having all intermediates in SMEM at once
+                // Load output intermediates from each partial attention contributor.
+                // All Q_HEADS for a given partial share one per-stage semaphore, so
+                // the consumer unblocks only after all heads for that partial arrive.
                 for (int i = 0; i < inst.num_partials; ++i) {
                     const uint8_t stage = i % NUM_STAGES;
                     const uint8_t cur_partial_idx = inst.reduction_list[i];
 
+                    // Wait until SMEM stage is free (all consumer warps finished with it)
+                    if (i >= NUM_STAGES) {
+                        const uint8_t prev_phase = (i / NUM_STAGES - 1) % 2;
+                        kittens::wait(O_partial_finished(s, stage), prev_phase);
+                    }
+
+                    // Issue TMA loads for all heads under the shared per-stage semaphore.
+                    // The semaphore fires once all Q_HEADS_PER_INSTRUCTION transfers complete.
                     for (int j = 0; j < Q_HEADS_PER_INSTRUCTION; ++j) {
                         o_sv& O_smem = get_O_partial_smem(s, j, stage);
-
-                        // Wait until SMEM target block is ready (previous stage is done)
-                        if (i >= NUM_STAGES) {
-                            const uint8_t prev_phase = (i / NUM_STAGES - 1) % 2;
-                            kittens::wait(O_partial_finished(s, j, stage), prev_phase);
-                        }
-
-                        // Load partial attention output intermediates to SMEM block
                         const kittens::coord<> partial_o_idx = {
                             0,
                             inst.q_head_start_idx + j,
                             cur_partial_idx,
                             0
                         };
-                        kittens::tma::expect(O_partial_arrived(s, j, stage), O_smem);
+                        kittens::tma::expect(O_partial_arrived(s, stage), O_smem);
                         kittens::tma::load_async<cache_policy::EVICT_FIRST>(
                             O_smem,
                             g.attn_out_intermediates,
                             partial_o_idx,
-                            O_partial_arrived(s, j, stage)
+                            O_partial_arrived(s, stage)
                         );
                     }
                 }
@@ -271,7 +287,7 @@ template <typename Config, typename Globals> struct attention_reduction {
                 // --- Reduction Pipeline ---
                 for (int i = 0; i < inst.num_partials; ++i) {
                     int stage = i % NUM_STAGES;
-                    kittens::warp::wait(O_partial_arrived(s, q_head_local_idx, stage),
+                    kittens::warp::wait(O_partial_arrived(s, stage),
                                (i / NUM_STAGES) % 2);
 
                     o_sv &O_smem =
@@ -304,8 +320,7 @@ template <typename Config, typename Globals> struct attention_reduction {
                     // Update LSE accumulator:
                     accumulated_lse = max_lse + log2f(new_denom);
 
-                    kittens::warp::arrive(
-                        O_partial_finished(s, q_head_local_idx, stage));
+                    kittens::warp::arrive(O_partial_finished(s, stage));
                 }
                 kittens::warp::arrive(L_partial_all_finished(s, q_head_local_idx));
 
