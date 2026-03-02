@@ -647,28 +647,21 @@ template <typename config, typename globals> struct attention_partial {
                 finish_QOL_page(s);
             }
 
-            // Wait and finish
-            if (laneid < GQA_RATIO) {
-
-                if (laneid == 0) {
-                    s.record(megakernel::TEVENT_AT_GMEM_STORE);
-                }
+            // Increment flag for KV head to indicate partial attention is complete
+            if (laneid == 0) {
+                s.record(megakernel::TEVENT_AT_GMEM_STORE);
 
                 if (skip_attn_reduction) {
                     atomicAdd(&g.Bar[{inst.layer_idx,
                                       OPCODE_AttentionReduction - 1, 0}],
                               1);
                 } else {
-                    // Adding only at 0, 4, 8, ... should be sufficient for the
-                    // reduction op!
                     atomicAdd(&g.Bar[{inst.layer_idx, opcode - 1,
-                                      q_head_start_idx + laneid}],
+                                      inst.kv_head_idx}],
                               1);
                 }
 
-                if (laneid == 0) {
-                    s.record(megakernel::TEVENT_DONE_GMEM_STORE);
-                }
+                s.record(megakernel::TEVENT_DONE_GMEM_STORE);
             }
         }
     };
