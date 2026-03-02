@@ -190,24 +190,12 @@ template <typename Config, typename Globals> struct attention_reduction {
                 const parsed_instruction inst{s};
 
                 // Wait until all partial attention outputs are ready in global memory
+                const int32_t kv_head_idx = inst.q_head_start_idx / Q_HEADS_PER_INSTRUCTION;
+                const kittens::coord<> barrier_idx = {
+                    inst.layer_idx, prev_opcode - 1, kv_head_idx
+                };
                 s.record(megakernel::TEVENT_AT_GMEM_WAIT);
-                while (true) {
-                    bool inputs_ready = true;
-                    for (int i = 0; i < Q_HEADS_PER_INSTRUCTION; i++) {
-                        const kittens::coord<> barrier_idx = {
-                            inst.layer_idx,
-                            prev_opcode - 1,
-                            inst.q_head_start_idx + i
-                        };
-                        const uint8_t partials_done = megakernel::gmem_read(&g.Bar[barrier_idx]);
-                        if (partials_done < inst.num_partials) {
-                            inputs_ready = false;
-                            break;
-                        }
-                    }
-                    if (inputs_ready) {
-                        break;
-                    }
+                while (megakernel::gmem_read(&g.Bar[barrier_idx]) < inst.num_partials) {
                     __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
                 }
                 s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
