@@ -16,24 +16,28 @@ using o_rv = kittens::rv_fl<globals::head_dim>;
 using o_final_sv = kittens::sv_bf<globals::head_dim>;
 
 template <typename Config, typename Globals> struct attention_reduction {
+    // Opcode
     static constexpr int opcode = OPCODE_AttentionReduction;
     static constexpr int prev_opcode = OPCODE_PartialAttention;
-    // SMEM constraints: fixed per-head overhead + stages x o_sv per head <= PAGE_SIZE
-    static constexpr int smem_per_stage = Q_HEADS_PER_INSTRUCTION * (int)sizeof(o_sv);
-    static constexpr int smem_fixed =
-        Q_HEADS_PER_INSTRUCTION * ((int)sizeof(l_partial_sv) + (int)sizeof(o_final_sv));
-    static constexpr int smem_max_stages =
-        (Config::PAGE_SIZE - smem_fixed) / smem_per_stage;
 
-    // Semaphore constraints: O uses 2 per stage (per-stage semaphores shared across heads),
-    // plus 3 per head (L arrived/finished, final_O ready).
-    static constexpr int sem_max_stages =
-        (Config::DYNAMIC_SEMAPHORES - Q_HEADS_PER_INSTRUCTION * 3) / 2;
+    // SMEM allocation
+    static constexpr int SMEM_PER_STAGE = Q_HEADS_PER_INSTRUCTION * (int)sizeof(o_sv);
+    static constexpr int SMEM_FIXED =
+        Q_HEADS_PER_INSTRUCTION * ((int)sizeof(l_partial_sv) + (int)sizeof(o_final_sv));
+    static constexpr int SMEM_MAX_STAGES =
+        (Config::PAGE_SIZE - SMEM_FIXED) / SMEM_PER_STAGE;
+
+    // Semaphore constraints: O uses SEMS_PER_STAGE per stage (arrived + finished),
+    // plus SEMS_PER_HEAD per head (L arrived, L finished, final_O ready).
+    static constexpr int SEMS_PER_STAGE = 2; // O_partial_arrived + O_partial_finished
+    static constexpr int SEMS_PER_HEAD  = 3; // L_arrived + L_finished + final_O_ready
+    static constexpr int SEM_MAX_STAGES =
+        (Config::DYNAMIC_SEMAPHORES - Q_HEADS_PER_INSTRUCTION * SEMS_PER_HEAD) / SEMS_PER_STAGE;
 
     static constexpr int NUM_STAGES =
-        smem_max_stages <= sem_max_stages
-            ? (smem_max_stages <= MAX_ATTN_PARTIALS ? smem_max_stages : MAX_ATTN_PARTIALS)
-            : (sem_max_stages <= MAX_ATTN_PARTIALS ? sem_max_stages : MAX_ATTN_PARTIALS);
+        SMEM_MAX_STAGES <= SEM_MAX_STAGES
+            ? (SMEM_MAX_STAGES <= MAX_ATTN_PARTIALS ? SMEM_MAX_STAGES : MAX_ATTN_PARTIALS)
+            : (SEM_MAX_STAGES <= MAX_ATTN_PARTIALS ? SEM_MAX_STAGES : MAX_ATTN_PARTIALS);
 
     struct parsed_instruction {
         int layer_idx;
