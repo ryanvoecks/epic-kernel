@@ -16,15 +16,7 @@ uv pip install -e .
 First, to compile the megakernel, run:
 
 ```bash
-
-# from the repo root
-export THUNDERKITTENS_ROOT=$(pwd)/ThunderKittens
-export MEGAKERNELS_ROOT=$(pwd)
-export PYTHON_VERSION=3.12 # adjust if yours is different
-export GPU=B200 # options are {H100, B200}, else defaults to B200
-cd demos/low-latency-llama
-uv run make
-
+make
 ```
 
 To start an interactive chat session with the model, run:
