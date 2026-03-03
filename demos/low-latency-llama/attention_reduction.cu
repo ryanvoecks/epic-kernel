@@ -1,5 +1,8 @@
-#include "llama.cuh"
+// Attention reduction instruction for combining partial reduction outputs
+
 #include <limits>
+
+#include "llama.cuh"
 
 using namespace kittens;
 using namespace megakernel;
