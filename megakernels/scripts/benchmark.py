@@ -27,8 +27,8 @@ class ScriptConfig(pydra.Config):
     model: str = "meta-llama/Llama-3.2-1B-Instruct"
     device: str = "cuda:0"
     input_tokens: int = 128
-    output_tokens: int = 100
-    mode: str = "model"
+    output_tokens: int = 128
+    mode: str = "mk"
     interleave_rope: bool = True
     mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
     num_warmup: int = 10
@@ -106,7 +106,7 @@ def run_benchmark(config, model, input_tokens, output_tokens):
 
     latencies = []
     gpu_latencies = []
-    for _ in tqdm(range(config.num_warmup + config.num_iters)):
+    for _ in tqdm(range(config.num_warmup + config.num_iters), desc=f"in={input_tokens} out={output_tokens}"):
         out_buf.zero_()
 
         start_event = torch.cuda.Event(enable_timing=True)
