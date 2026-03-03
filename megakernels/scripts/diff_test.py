@@ -12,6 +12,7 @@ from megakernels.dispatch import (
     make_pyvm_interpreter,
     make_schedule_builder,
 )
+from megakernels.utils import get_free_gpu
 from megakernels.llama import ExtraModelConfig, LlamaForCausalLM
 from megakernels.scheduler import (
     assign_to_sms,
@@ -22,7 +23,7 @@ from megakernels.scheduler import (
 class ScriptConfig(pydra.Config):
     mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
     model: str = "meta-llama/Llama-3.2-1B-Instruct"
-    device: str = "cuda:0"
+    device: str | None = None
     prompt_len: int = 10
     ntok: int = 10
     stop_after_op: str | None = None
@@ -69,6 +70,10 @@ class ScriptConfig(pydra.Config):
 
 
 def main(config: ScriptConfig):
+    if config.device is None:
+        config.device = get_free_gpu()
+        if config.device is None:
+            raise SystemExit("No free GPUs available.")
     torch.manual_seed(0)
     torch.cuda.set_device(config.device)
 
