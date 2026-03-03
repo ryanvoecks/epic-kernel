@@ -7,13 +7,14 @@ from tabulate import tabulate
 from megakernels.llama import LlamaForCausalLM
 from megakernels.model_types import ExtraModelConfig
 from megakernels.scripts.benchmark import run_benchmark
+from megakernels.utils import get_free_gpu
 
 SWEEP_SIZES = [128, 512, 2048]
 
 
 class ScriptConfig(pydra.Config):
     model: str = "meta-llama/Llama-3.2-1B-Instruct"
-    device: str = "cuda:0"
+    device: str | None = None
     mode: str = "mk"
     interleave_rope: bool = True
     mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
@@ -46,6 +47,10 @@ class ScriptConfig(pydra.Config):
 
 @torch.inference_mode()
 def main(config: ScriptConfig):
+    if config.device is None:
+        config.device = get_free_gpu()
+        if config.device is None:
+            raise SystemExit("No free GPUs available.")
     torch.cuda.set_device(config.device)
 
     extra_config = ExtraModelConfig(

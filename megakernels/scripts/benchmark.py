@@ -10,6 +10,7 @@ from megakernels.dispatch import (
     make_pyvm_interpreter,
     make_schedule_builder,
 )
+from megakernels.utils import get_free_gpu
 from megakernels.generators import (
     MK_Generator,
     PyTorchGenerator,
@@ -25,7 +26,7 @@ from megakernels.scheduler import (
 
 class ScriptConfig(pydra.Config):
     model: str = "meta-llama/Llama-3.2-1B-Instruct"
-    device: str = "cuda:0"
+    device: str | None = None
     input_tokens: int = 128
     output_tokens: int = 128
     mode: str = "mk"
@@ -133,6 +134,10 @@ def run_benchmark(config, model, input_tokens, output_tokens):
 
 @torch.inference_mode()
 def main(config: ScriptConfig):
+    if config.device is None:
+        config.device = get_free_gpu()
+        if config.device is None:
+            raise SystemExit("No free GPUs available.")
     torch.cuda.set_device(config.device)
 
     extra_config = ExtraModelConfig(
