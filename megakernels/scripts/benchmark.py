@@ -27,8 +27,8 @@ class ScriptConfig(pydra.Config):
     model: str = "meta-llama/Llama-3.2-1B-Instruct"
     device: str = "cuda:0"
     input_tokens: int = 128
-    output_tokens: int = 100
-    mode: str = "model"
+    output_tokens: int = 128
+    mode: str = "mk"
     interleave_rope: bool = True
     mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
     num_warmup: int = 10
@@ -58,40 +58,14 @@ class ScriptConfig(pydra.Config):
         self.model = "meta-llama/Llama-3.1-8B-Instruct"
 
 
-@torch.inference_mode()
-def main(config: ScriptConfig):
-    torch.cuda.set_device(config.device)
+def run_benchmark(config, model, input_tokens, output_tokens):
+    """Build schedule, create generator, run warmup + timed iters.
 
-    extra_config = ExtraModelConfig(
-        interleave_rope=config.interleave_rope,
-        max_len_override=config.max_len_override,
-        max_batch_size=config.batch_size,
-    )
-    model = LlamaForCausalLM.from_pretrained(
-        config.model, device=config.device, extra_config=extra_config
-    )
-
-    vocab_size = model.config.vocab_size
-    input_ids = torch.randint(
-        0, vocab_size, (1, config.input_tokens), device=model.device, dtype=torch.long
-    )
-    prompt_len = config.input_tokens
-
-    print(f"Input ids shape: {input_ids.shape}")
-
-    position_ids = torch.arange(prompt_len, device=model.device)
-
-    prefill_inp = BatchState(
-        input_ids=input_ids,
-        position_ids=position_ids,
-    )
-
-    output_tokens = torch.zeros(
-        config.batch_size, config.output_tokens, device=model.device, dtype=torch.long
-    )
-
+    Returns (wall_latencies, gpu_latencies) — one entry per measured iteration,
+    with warmup iterations already excluded.
+    """
     schedule_builder = make_schedule_builder(config.setting)
-    seq_len = config.input_tokens + config.output_tokens
+    seq_len = input_tokens + output_tokens
     schedule = schedule_builder.build(model, seq_len=seq_len)
     assigned_to_sms = assign_to_sms(
         config.sched, schedule=schedule, memory_fraction=config.memory_fraction
@@ -119,13 +93,21 @@ def main(config: ScriptConfig):
         case _:
             raise ValueError(f"Invalid mode: {config.mode}")
 
-    # Measure end-to-end latency: prefill + all decode steps (matches vLLM benchmark
-    # methodology). Primary metric is wall-clock time via time.perf_counter(); GPU
-    # event timing is recorded as a secondary metric.
+    vocab_size = model.config.vocab_size
+    input_ids = torch.randint(
+        0, vocab_size, (1, input_tokens), device=model.device, dtype=torch.long
+    )
+    position_ids = torch.arange(input_tokens, device=model.device)
+    prefill_inp = BatchState(input_ids=input_ids, position_ids=position_ids)
+
+    out_buf = torch.zeros(
+        config.batch_size, output_tokens, device=model.device, dtype=torch.long
+    )
+
     latencies = []
     gpu_latencies = []
-    for _ in tqdm(range(config.num_warmup + config.num_iters)):
-        output_tokens.zero_()
+    for _ in tqdm(range(config.num_warmup + config.num_iters), desc=f"in={input_tokens} out={output_tokens}"):
+        out_buf.zero_()
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -135,9 +117,9 @@ def main(config: ScriptConfig):
 
         prefill_output: BatchState = model(prefill_inp)
         assert prefill_output.output_ids is not None
-        output_tokens[:, 0] = prefill_output.output_ids[:, -1:]
+        out_buf[:, 0] = prefill_output.output_ids[:, -1:]
 
-        gen.generate(output_tokens, prompt_len, config.output_tokens - 1)
+        gen.generate(out_buf, input_tokens, output_tokens - 1)
 
         end_event.record()
         torch.cuda.synchronize()
@@ -146,8 +128,27 @@ def main(config: ScriptConfig):
         latencies.append(end - start)
         gpu_latencies.append(start_event.elapsed_time(end_event) / 1000)
 
-    latencies = latencies[config.num_warmup :]
-    gpu_latencies = gpu_latencies[config.num_warmup :]
+    return latencies[config.num_warmup:], gpu_latencies[config.num_warmup:]
+
+
+@torch.inference_mode()
+def main(config: ScriptConfig):
+    torch.cuda.set_device(config.device)
+
+    extra_config = ExtraModelConfig(
+        interleave_rope=config.interleave_rope,
+        max_len_override=config.max_len_override,
+        max_batch_size=config.batch_size,
+    )
+    model = LlamaForCausalLM.from_pretrained(
+        config.model, device=config.device, extra_config=extra_config
+    )
+
+    print(f"Input ids shape: (1, {config.input_tokens})")
+
+    latencies, gpu_latencies = run_benchmark(
+        config, model, config.input_tokens, config.output_tokens
+    )
 
     avg_latency = sum(latencies) / len(latencies)
     avg_gpu_latency = sum(gpu_latencies) / len(gpu_latencies)
