@@ -194,11 +194,11 @@ template <typename config> struct state {
     uint64_t start_clock;
 
     __device__ inline void record(int event_id) {
-        if constexpr (config::TIMING_RECORD_ENABLED) {
-            uint64_t current = clock64();
-            int diff = (int)(current - start_clock);
-            timing()[event_id] = diff;
-        }
+#ifdef TIMING_RECORD_ENABLED
+        uint64_t current = clock64();
+        int diff = (int)(current - start_clock);
+        timing()[event_id] = diff;
+#endif
     }
 
 #ifdef KITTENS_BLACKWELL

@@ -1,8 +1,9 @@
-local/
-__pycache__/
-*.egg-info/
+__pycache__
+.vscode
+local
 
 *.cubin
+*.egg-info
 *.fatbin
 *.gpu
 *.html
@@ -10,7 +11,4 @@ __pycache__/
 *.ii
 *.pkl
 *.ptx
-*.cubin
-*.fatbin
-uv.lock
 *.so

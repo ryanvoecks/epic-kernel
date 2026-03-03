@@ -1,3 +1,5 @@
+// Partial attention instruction, followed by attention reduction
+
 #include "llama.cuh"
 
 using namespace kittens;
