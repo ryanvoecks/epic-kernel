@@ -66,7 +66,7 @@ class Schedule:
 
 class ScheduleBuilder:
     @classmethod
-    def make_globals(cls, model):
+    def make_globals(cls, model, seq_len: int = 0):
         raise NotImplementedError
 
     @classmethod
@@ -81,14 +81,15 @@ class ScheduleBuilder:
         model: LlamaForCausalLM,
         stop_after_op: str | None = None,
         layer_limit: int | None = None,
+        seq_len: int = 0,
     ):
-        globs = cls.make_globals(model)
+        globs = cls.make_globals(model, seq_len=seq_len)
         dag_nodes, end_node = cls.make_dag(globs, stop_after_op, layer_limit)
         return Schedule(globs, dag_nodes, end_node)
 
     @classmethod
-    def with_new_globals(cls, schedule: Schedule, model: LlamaForCausalLM):
-        return replace(schedule, globs=cls.make_globals(model))
+    def with_new_globals(cls, schedule: Schedule, model: LlamaForCausalLM, seq_len: int = 0):
+        return replace(schedule, globs=cls.make_globals(model, seq_len=seq_len))
 
 
 def assign_dag_to_sms(schedule: Schedule) -> list[list[Instruction]]:

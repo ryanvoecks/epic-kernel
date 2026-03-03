@@ -90,9 +90,10 @@ def main(config: ScriptConfig):
         model=model,
         layer_limit=config.layer_limit,
         stop_after_op=config.stop_after_op,
+        seq_len=config.prompt_len + config.ntok,
     )
 
-    smk = builder.with_new_globals(spy, model)
+    smk = builder.with_new_globals(spy, model, seq_len=config.prompt_len + config.ntok)
 
     gpy = spy.globs
     gmk = smk.globs

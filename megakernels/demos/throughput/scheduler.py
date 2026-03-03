@@ -400,7 +400,7 @@ def make_dag_layer(
 
 class ThroughputScheduleBuilder(ScheduleBuilder):
     @classmethod
-    def make_globals(cls, model):
+    def make_globals(cls, model, seq_len: int = 0):
         return make_globals(model)
 
     @classmethod

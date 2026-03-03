@@ -19,13 +19,16 @@ from megakernels.scheduler import DAG_Node, ScheduleBuilder
 from megakernels.utils import assert_div, get_sm_count
 
 
+B200_SM_COUNT = 160
+
+
 def pick_num_attention_partitions(prompt_len: int, ntok: int, num_kv_heads: int, device: torch.device):
     min_chunk_size = 256
     full_len = prompt_len + ntok
 
     num_divisions = math.ceil(full_len / min_chunk_size)
 
-    sm_count = get_sm_count(device)
+    sm_count = min(get_sm_count(device), B200_SM_COUNT)
     num_attention_partitions = min(num_divisions, sm_count // num_kv_heads)
 
     assert num_attention_partitions >= 1
@@ -36,14 +39,19 @@ def pick_num_attention_partitions(prompt_len: int, ntok: int, num_kv_heads: int,
 def make_globals(
     model: LlamaForCausalLM,
     skip_attn_reduction: bool | None = None,
+    seq_len: int = 0,
 ):
     config = model.config
     device = model.device
     dtype = model.dtype
 
     if skip_attn_reduction is None:
-        max_seq_len = model.stacked_kv_cache[0].shape[2]
-        num_partitions = pick_num_attention_partitions(max_seq_len, 0, model.num_kv_heads(), device)
+        # Compute from seq_len so that with_new_globals (which doesn't
+        # re-run make_dag) still gets the correct value.
+        actual_seq_len = seq_len + 1  # mirrors make_dag_layer: pos_id + 1
+        num_partitions = pick_num_attention_partitions(
+            actual_seq_len, 0, config.num_key_value_heads, device
+        )
         skip_attn_reduction = num_partitions == 1
 
     def make_buffer(shape, buffer_dtype=dtype):
@@ -93,7 +101,7 @@ def make_globals(
         silu_out=make_buffer(config.intermediate_size),
         logits=make_buffer(config.vocab_size),
         # scalars
-        pos_id=0,
+        pos_id=seq_len,
         attn_scale=1 / math.sqrt(config.head_dim),
         rms_norm_eps=config.rms_norm_eps,
         skip_attn_reduction=skip_attn_reduction,
@@ -276,8 +284,8 @@ def make_dag_layer(
     prev_layer_outputs: list[DAG_Node],
     stop_after_op: str | None = None,
 ):
-    max_seq_len = globs.k_cache.shape[2]
-    num_attention_partitions = pick_num_attention_partitions(max_seq_len, 0, globs.num_kv_heads, globs.device)
+    actual_seq_len = globs.pos_id + 1
+    num_attention_partitions = pick_num_attention_partitions(actual_seq_len, 0, globs.num_kv_heads, globs.device)
     # num_attention_partitions = 2 # temp hardcode
     globs.skip_attn_reduction = num_attention_partitions == 1
 
@@ -413,8 +421,8 @@ def make_dag_layer(
 
 class LatencyScheduleBuilder(ScheduleBuilder):
     @classmethod
-    def make_globals(cls, model):
-        return make_globals(model)
+    def make_globals(cls, model, seq_len: int = 0):
+        return make_globals(model, seq_len=seq_len)
 
     @classmethod
     def make_dag(

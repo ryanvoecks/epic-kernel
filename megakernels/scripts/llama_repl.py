@@ -52,7 +52,8 @@ def main(config: ScriptConfig):
     messages = []
 
     schedule_builder = make_schedule_builder(config.setting)
-    schedule = schedule_builder.build(model)
+    seq_len = config.max_tokens_per_turn
+    schedule = schedule_builder.build(model, seq_len=seq_len)
     assigned_to_sms = assign_to_sms(
         config.sched, schedule=schedule, memory_fraction=config.memory_fraction
     )
