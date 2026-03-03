@@ -122,8 +122,9 @@ def main(config: ScriptConfig):
         config.model, device=config.device, extra_config=extra_config
     )
 
+    max_seq_len = max(SWEEP_SIZES) * 2  # input + output
     schedule_builder = make_schedule_builder(config.setting)
-    schedule = schedule_builder.build(model)
+    schedule = schedule_builder.build(model, seq_len=max_seq_len)
     assigned_to_sms = assign_to_sms(
         config.sched, schedule=schedule, memory_fraction=config.memory_fraction
     )

@@ -137,7 +137,8 @@ def main(config: ScriptConfig):
     output_tokens[:, 0] = new_input_token
 
     schedule_builder = make_schedule_builder(config.setting)
-    schedule = schedule_builder.build(model)
+    seq_len = prompt_len + config.ntok
+    schedule = schedule_builder.build(model, seq_len=seq_len)
     assigned_to_sms = assign_to_sms(
         config.sched, schedule=schedule, memory_fraction=config.memory_fraction
     )

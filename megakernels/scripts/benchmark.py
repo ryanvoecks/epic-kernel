@@ -91,7 +91,8 @@ def main(config: ScriptConfig):
     )
 
     schedule_builder = make_schedule_builder(config.setting)
-    schedule = schedule_builder.build(model)
+    seq_len = config.input_tokens + config.output_tokens
+    schedule = schedule_builder.build(model, seq_len=seq_len)
     assigned_to_sms = assign_to_sms(
         config.sched, schedule=schedule, memory_fraction=config.memory_fraction
     )

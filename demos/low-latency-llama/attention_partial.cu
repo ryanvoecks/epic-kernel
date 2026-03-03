@@ -654,7 +654,7 @@ template <typename config, typename globals> struct attention_partial {
                 if (skip_attn_reduction) {
                     atomicAdd(&g.Bar[{inst.layer_idx,
                                       OPCODE_AttentionReduction - 1, 0}],
-                              1);
+                              GQA_RATIO);
                 } else {
                     atomicAdd(&g.Bar[{inst.layer_idx, opcode - 1,
                                       inst.kv_head_idx}],
