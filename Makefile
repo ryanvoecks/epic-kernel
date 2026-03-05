@@ -1,6 +1,6 @@
 # Build any target in repo
 
-# Config
+# Build target
 TARGET ?= mk_llama
 
 # Key paths

@@ -6,17 +6,29 @@ Clone this repo and run:
 
 ```bash
 git submodule update --init --recursive
-pip install uv
-uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-uv pip install -e .
+uv sync
 ```
 
-## Low-Latency Llama Demo
+## Compilation
 
-First, to compile the megakernel, run:
+To compile the megakernel, run:
 
 ```bash
 make
+```
+
+## Benchmarking
+
+To benchmark the megakernel, run:
+
+```bash
+uv run megakernels/scripts/benchmark.py
+```
+
+To perform a regression sweep across different sequence lengths, run:
+
+```bash
+uv run megakernels/scripts/regression.py
 ```
 
 To start an interactive chat session with the model, run:
@@ -25,14 +37,23 @@ To start an interactive chat session with the model, run:
 uv run megakernels/scripts/llama_repl.py
 ```
 
-To benchmark the megakernel, run:
+## Generating plots
+
+To compile the megakernel with profiling enabled and generate a profile, run:
 
 ```bash
-uv run megakernels/scripts/benchmark.py mode=mk input_tokens=128 output_tokens=128
+make CONFIG=Debug
+uv run megakernels/scripts/diff_test.py outfile=events.pkl
 ```
 
-To perform a regression sweep across different sequence lengths, run:
+To generate a bokeh plot showing SM slot occupancy:
 
 ```bash
-uv run megakernels/scripts/regression.py
+uv run ThunderKittens/demos/kvm-runner/timing_plot.py infile=events.pkl
+```
+
+To generate HBM utilisation plots, run:
+
+```bash
+uv run megakernels/scripts/plot_hbm_utilization.py --input events.pkl
 ```

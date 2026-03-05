@@ -1,4 +1,7 @@
 import json
+import random
+import re
+import subprocess
 from pathlib import Path
 from typing import List
 
@@ -102,6 +105,29 @@ def trepr(t: Tensor):
     Tensor representation.
     """
     return f"shape={t.shape}, sum={t.sum()}, vals={t}"
+
+
+def get_free_gpu() -> str | None:
+    """Return a random unused GPU as 'cuda:<idx>', or None if all are in use."""
+    result = subprocess.run(
+        ["nvidia-smi"], capture_output=True, text=True
+    )
+    output = result.stdout
+
+    # Find all GPU indices listed in the header (e.g. "| N/A  75C    P0 ...")
+    total_gpus = len(re.findall(r"^\|\s+\d+\s+\w+.*On\s*\|", output, re.MULTILINE))
+
+    # Parse GPU indices from the processes section
+    processes_section = re.split(r"\|\s+Processes:\s+\|", output)
+    used_gpu_indices: set[int] = set()
+    if len(processes_section) > 1:
+        for match in re.finditer(r"^\|\s+(\d+)\s+", processes_section[1], re.MULTILINE):
+            used_gpu_indices.add(int(match.group(1)))
+
+    free_gpus = [i for i in range(total_gpus) if i not in used_gpu_indices]
+    if not free_gpus:
+        return None
+    return f"cuda:{random.choice(free_gpus)}"
 
 
 def get_sm_count(device: str) -> int:
