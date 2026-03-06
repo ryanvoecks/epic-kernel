@@ -80,6 +80,11 @@ class ScriptConfig(pydra.Config):
     def l8(self):
         self.model = "meta-llama/Llama-3.1-8B-Instruct"
 
+    def l3(self):
+        self.model = "meta-llama/Llama-3.2-3B-Instruct"
+        self.setting = "latency_3b"
+        self.mk_dir = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama-3b"
+
 
 @torch.inference_mode()
 def main(config: ScriptConfig):
