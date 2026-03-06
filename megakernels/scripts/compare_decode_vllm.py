@@ -83,10 +83,13 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="megakernels/scripts/decode_comparison.png",
+        default="megakernels/scripts/outputs/decode_comparison.png",
         help="Path for the output plot PNG",
     )
     args = parser.parse_args()
+    # Ensure output directory exists (write JSON + PNG there)
+    out_dir = Path(args.output).parent
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     vllm_dir = find_vllm_dir()
     print(f"vLLM dir : {vllm_dir}")
