@@ -129,7 +129,7 @@ def make_globals(
         down_proj_block_size=16,
         qkv_block_size=16,
         o_proj_block_size=16,
-        lm_head_block_size=32,
+        lm_head_block_size=16,
         # 1024 divides both intermediate_size (8192/1024=8) and
         # hidden_size (3072/1024=3) evenly.
         matvec_reduction_size=1024,

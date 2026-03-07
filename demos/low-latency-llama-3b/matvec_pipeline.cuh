@@ -411,10 +411,14 @@ struct rms_matvec_pipeline
 
         kittens::wait(rms_scale_arrived(s), 0);
 
+        // Use the last output stage for RMS scratch (safe: no outputs
+        // produced yet).  Using OUTPUT_PIPELINE_STAGES would place it at
+        // scratch+3072, which overlaps with the rope cos/sin buffer when
+        // head_dim=128 (3B).
         auto activations_vec = rms_norm<Config, Globals>(
             rms_scale_smem, activations_smem, g.rms_norm_eps,
             pipeline::get_output_start(s,
-                                       pipeline::OUTPUT_PIPELINE_STAGES));
+                                       pipeline::OUTPUT_PIPELINE_STAGES - 1));
 
         kittens::warp::sync();
         s.warp_finish_page(activation_page, 1);
