@@ -33,7 +33,7 @@ class ScriptConfig(pydra.Config):
     ntok: int = 100
     mode: str = "model"
     interleave_rope: bool = True
-    mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
+    mk_dir: Path = Path(__file__).parent.parent.parent / "build"
     token_details: bool = False
     tokens: bool = True
     num_warmup: int = 5
@@ -83,7 +83,7 @@ class ScriptConfig(pydra.Config):
     def l3(self):
         self.model = "meta-llama/Llama-3.2-3B-Instruct"
         self.setting = "latency_3b"
-        self.mk_dir = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama-3b"
+        self.mk_dir = Path(__file__).parent.parent.parent / "build"
 
 
 @torch.inference_mode()

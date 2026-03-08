@@ -59,7 +59,7 @@ def run_vllm(output_len: int, gpu: int, vllm_dir: Path) -> float:
 
 def run_megakernel(output_len: int, gpu: int) -> float:
     """Return avg wall-clock latency in ms from the megakernel benchmark (3B setting)."""
-    mk_dir = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama-3b"
+    mk_dir = Path(__file__).parent.parent.parent / "build"
     cmd = [
         "uv", "run", "megakernels/scripts/benchmark.py",
         "mode=mk",

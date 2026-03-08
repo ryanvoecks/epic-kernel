@@ -1,11 +1,12 @@
 # Build any target in repo
 
 # Build target
-TARGET ?= mk_llama mk_llama_3b
+TARGET ?= mk_llama
 
 # Key paths
 export MEGAKERNELS_ROOT = $(CURDIR)
 export THUNDERKITTENS_ROOT = $(MEGAKERNELS_ROOT)/ThunderKittens
+export BUILD_DIR = $(MEGAKERNELS_ROOT)/build
 export PYTHON = uv run python
 
 # Default target

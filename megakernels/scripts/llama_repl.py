@@ -34,7 +34,7 @@ class ScriptConfig(pydra.Config):
     hf_model: str | None = None  # overrides model's default HF path
     device: str = "cuda:0"
     max_tokens_per_turn: int = 1024
-    mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
+    mk_dir: Path = Path(__file__).parent.parent.parent / "build"
     mode: str = "mk"
     sched: str = "rr"
     setting: str | None = None  # overrides model's default setting

@@ -24,11 +24,13 @@ endif
 all: mk_llama
 
 mk_llama: llama.cu
-	$(NVCC) llama.cu $(NVCC_FLAGS) -o mk_llama$(EXT_SUFFIX)
+	mkdir -p $(BUILD_DIR)
+	$(NVCC) llama.cu $(NVCC_FLAGS) -o $(BUILD_DIR)/mk_llama$(EXT_SUFFIX)
 
 mk_llama_3b: llama.cu
-	$(NVCC) llama.cu $(NVCC_FLAGS) -DLLAMA_3B -o mk_llama_3b$(EXT_SUFFIX)
+	mkdir -p $(BUILD_DIR)
+	$(NVCC) llama.cu $(NVCC_FLAGS) -DLLAMA_3B -o $(BUILD_DIR)/mk_llama_3b$(EXT_SUFFIX)
 
 # Clean target
 clean:
-	rm -f mk_llama$(EXT_SUFFIX) mk_llama_3b$(EXT_SUFFIX)
+	rm -f $(BUILD_DIR)/mk_llama$(EXT_SUFFIX) $(BUILD_DIR)/mk_llama_3b$(EXT_SUFFIX)

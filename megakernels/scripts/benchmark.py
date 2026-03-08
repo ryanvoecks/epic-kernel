@@ -31,7 +31,7 @@ class ScriptConfig(pydra.Config):
     output_tokens: int = 128
     mode: str = "mk"
     interleave_rope: bool = True
-    mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
+    mk_dir: Path = Path(__file__).parent.parent.parent / "build"
     num_warmup: int = 10
     num_iters: int = 30
     barrier_fill_val: int = 0
@@ -61,7 +61,7 @@ class ScriptConfig(pydra.Config):
     def l3(self):
         self.model = "meta-llama/Llama-3.2-3B-Instruct"
         self.setting = "latency_3b"
-        self.mk_dir = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama-3b"
+        self.mk_dir = Path(__file__).parent.parent.parent / "build"
 
 
 def run_benchmark(config, model, input_tokens, output_tokens):

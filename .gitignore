@@ -1,5 +1,6 @@
 __pycache__
 .vscode
+build
 local
 
 *.cubin
@@ -12,4 +13,3 @@ local
 *.pkl
 *.ptx
 *.so
-outputs/

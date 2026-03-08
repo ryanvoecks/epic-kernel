@@ -17,7 +17,7 @@ class ScriptConfig(pydra.Config):
     device: str | None = None
     mode: str = "mk"
     interleave_rope: bool = True
-    mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
+    mk_dir: Path = Path(__file__).parent.parent.parent / "build"
     num_warmup: int = 2
     num_iters: int = 4
     barrier_fill_val: int = 0
@@ -47,7 +47,7 @@ class ScriptConfig(pydra.Config):
     def l3b(self):
         # preset for the 3B megakernel demo
         self.model = "meta-llama/Llama-3.2-3B-Instruct"
-        self.mk_dir = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama-3b"
+        self.mk_dir = Path(__file__).parent.parent.parent / "build"
         self.setting = "latency_3b"
 
 
