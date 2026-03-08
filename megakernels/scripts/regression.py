@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pydra
@@ -11,6 +12,19 @@ from megakernels.scripts.benchmark import run_benchmark
 from megakernels.utils import get_free_gpu
 
 SWEEP_SIZES = [128, 512, 2048]
+
+
+def _wait_for_gpu(max_wait: int, poll_interval: int = 30) -> str:
+    device = get_free_gpu()
+    elapsed = 0
+    while device is None and elapsed < max_wait:
+        print(f"No free GPUs. Retrying in {poll_interval}s ({elapsed}/{max_wait}s)...")
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        device = get_free_gpu()
+    if device is None:
+        raise SystemExit(f"No free GPUs after waiting {max_wait}s.")
+    return device
 
 
 class ScriptConfig(pydra.Config):
@@ -30,6 +44,7 @@ class ScriptConfig(pydra.Config):
     sched: str = "rr"
     setting: str = "latency"
     memory_fraction: float | None = None
+    gpu_wait: int = 3600
     wandb_project: str = "megakernels-regression"
     wandb_entity: str = "epic_kernel"
     wandb_enabled: bool = False
@@ -52,9 +67,7 @@ class ScriptConfig(pydra.Config):
 @torch.inference_mode()
 def main(config: ScriptConfig):
     if config.device is None:
-        config.device = get_free_gpu()
-        if config.device is None:
-            raise SystemExit("No free GPUs available.")
+        config.device = _wait_for_gpu(config.gpu_wait)
     torch.cuda.set_device(config.device)
 
     run = None

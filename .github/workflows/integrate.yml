@@ -25,7 +25,6 @@ jobs:
         run: |
           uv python install 3.12
           uv sync
-          uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
       - name: Install pre-commit hooks
         run: uv run pre-commit install-hooks
