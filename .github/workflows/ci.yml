@@ -35,7 +35,7 @@ jobs:
       - name: Build CUDA megakernel
         run: |
           cd demos/low-latency-llama
-          make
+          uv run make PYTHON=python
 
       - name: Run regression sweep
         env:
