@@ -12,10 +12,10 @@ export PYTHON = uv run python
 all: $(TARGET)
 
 mk_llama:
-	$(MAKE) -C demos/low-latency-llama
+	$(MAKE) -C demos/low-latency-llama mk_llama
 
 mk_llama_3b:
-	$(MAKE) -C demos/low-latency-llama-3b
+	$(MAKE) -C demos/low-latency-llama mk_llama_3b
 
 # Clean target
 clean:
