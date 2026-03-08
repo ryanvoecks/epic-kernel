@@ -27,8 +27,8 @@ export MEGAKERNELS_ROOT=$(pwd)
 export PYTHON_VERSION=3.12   # adjust if needed
 export GPU=H100              # options: H100, B200 (default), A100, 4090
 cd demos/low-latency-llama
-make
-make clean  # removes compiled .so  🌦️
+maketee
+make clean  # removes compiled .so  .
 ```
 
 The Makefile compiles `llama.cu` into a Python extension (`mk_llama.cpython-*.so`) using nvcc with pybind11. GPU target sets the appropriate KITTENS macro and sm arch.
