@@ -2,8 +2,6 @@ name: Integrate
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 jobs:
   integrate:
