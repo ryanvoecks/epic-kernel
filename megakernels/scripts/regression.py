@@ -88,24 +88,36 @@ def main(config: ScriptConfig):
     rows = []
     for input_tokens in SWEEP_SIZES:
         for output_tokens in SWEEP_SIZES:
-            latencies, gpu_latencies = run_benchmark(config, model, input_tokens, output_tokens)
+            latencies, gpu_latencies = run_benchmark(
+                config, model, input_tokens, output_tokens
+            )
             avg_latency = sum(latencies) / len(latencies)
             avg_gpu_latency = sum(gpu_latencies) / len(gpu_latencies)
             ms_per_tok = avg_latency * 1000 / output_tokens
             gpu_ms_per_tok = avg_gpu_latency * 1000 / output_tokens
-            rows.append((input_tokens, output_tokens, avg_latency * 1000, ms_per_tok, gpu_ms_per_tok))
+            rows.append(
+                (
+                    input_tokens,
+                    output_tokens,
+                    avg_latency * 1000,
+                    ms_per_tok,
+                    gpu_ms_per_tok,
+                )
+            )
 
             if run is not None:
-                run.log({
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_ms": avg_latency * 1000,
-                    "ms_per_token": ms_per_tok,
-                    "gpu_ms_per_token": gpu_ms_per_tok,
-                })
+                run.log(
+                    {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_ms": avg_latency * 1000,
+                        "ms_per_token": ms_per_tok,
+                        "gpu_ms_per_token": gpu_ms_per_tok,
+                    }
+                )
 
     print()
-    print(f"Regression sweep — model={config.model}  mode={config.mode}")
+    print(f"Regression sweep -- model={config.model}  mode={config.mode}")
     headers = ["input_tok", "output_tok", "total_ms", "ms/token", "gpu_ms/token"]
     print(tabulate(rows, headers=headers, floatfmt=".2f"))
 
