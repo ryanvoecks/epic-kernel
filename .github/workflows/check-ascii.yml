@@ -1,0 +1,59 @@
+name: Check Non-ASCII Characters
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check-ascii:
+    runs-on: ee-tromokratis
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for non-ASCII characters in changed files
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+
+          # Get list of added/modified files in the commits
+          FILES=$(git diff --name-only --diff-filter=ACM "$BASE" HEAD)
+
+          if [ -z "$FILES" ]; then
+            echo "No changed files to check."
+            exit 0
+          fi
+
+          FOUND=0
+          while IFS= read -r file; do
+            # Skip binary files
+            if file --mime "$file" | grep -q "charset=binary"; then
+              continue
+            fi
+
+            # Find non-ASCII characters and report them
+            NON_ASCII=$(grep -Pn '[^\x00-\x7F]' "$file" || true)
+            if [ -n "$NON_ASCII" ]; then
+              echo "::error::Non-ASCII characters found in $file:"
+              echo "$NON_ASCII" | while IFS= read -r line; do
+                LINE_NUM=$(echo "$line" | cut -d: -f1)
+                echo "::error file=$file,line=$LINE_NUM::$line"
+              done
+              FOUND=1
+            fi
+          done <<< "$FILES"
+
+          if [ "$FOUND" -eq 1 ]; then
+            echo ""
+            echo "ERROR: Non-ASCII characters detected in the above files."
+            echo "Please replace them with ASCII equivalents."
+            exit 1
+          fi
+
+          echo "All changed files contain only ASCII characters."
