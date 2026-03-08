@@ -1,0 +1,27 @@
+name: Integrate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  integrate:
+    runs-on: ee-tromokratis
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run pre-commit
+        uses: pre-commit/action@v3.0.1
