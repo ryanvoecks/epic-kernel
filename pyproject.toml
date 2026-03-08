@@ -21,6 +21,7 @@ dependencies = [
     "art",
     "pybind11",
     "bokeh>=3.8.2",
+    "wandb",
 ]
 
 [tool.setuptools]
