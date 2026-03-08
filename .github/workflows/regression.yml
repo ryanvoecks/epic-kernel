@@ -27,7 +27,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+          uv pip install --system torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
           uv sync
 
       - name: Build CUDA megakernel
