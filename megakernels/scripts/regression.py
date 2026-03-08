@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pydra
 import torch
+import wandb
 from tabulate import tabulate
 
 from megakernels.llama import LlamaForCausalLM
@@ -29,6 +30,9 @@ class ScriptConfig(pydra.Config):
     sched: str = "rr"
     setting: str = "latency"
     memory_fraction: float | None = None
+    wandb_project: str = "megakernels-regression"
+    wandb_entity: str = "epic_kernel"
+    wandb_enabled: bool = False
 
     def finalize(self):
         if self.setting == "latency" and self.mode in ["mk", "pyvm"]:
@@ -53,6 +57,25 @@ def main(config: ScriptConfig):
             raise SystemExit("No free GPUs available.")
     torch.cuda.set_device(config.device)
 
+    run = None
+    if config.wandb_enabled:
+        run = wandb.init(
+            entity=config.wandb_entity,
+            project=config.wandb_project,
+            config={
+                "model": config.model,
+                "mode": config.mode,
+                "batch_size": config.batch_size,
+                "sched": config.sched,
+                "setting": config.setting,
+                "num_warmup": config.num_warmup,
+                "num_iters": config.num_iters,
+                "barrier_fill_val": config.barrier_fill_val,
+                "max_len_override": config.max_len_override,
+                "sweep_sizes": SWEEP_SIZES,
+            },
+        )
+
     extra_config = ExtraModelConfig(
         interleave_rope=config.interleave_rope,
         max_len_override=config.max_len_override,
@@ -72,10 +95,27 @@ def main(config: ScriptConfig):
             gpu_ms_per_tok = avg_gpu_latency * 1000 / output_tokens
             rows.append((input_tokens, output_tokens, avg_latency * 1000, ms_per_tok, gpu_ms_per_tok))
 
+            if run is not None:
+                run.log({
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_ms": avg_latency * 1000,
+                    "ms_per_token": ms_per_tok,
+                    "gpu_ms_per_token": gpu_ms_per_tok,
+                })
+
     print()
     print(f"Regression sweep — model={config.model}  mode={config.mode}")
     headers = ["input_tok", "output_tok", "total_ms", "ms/token", "gpu_ms/token"]
     print(tabulate(rows, headers=headers, floatfmt=".2f"))
+
+    if run is not None:
+        table = wandb.Table(
+            columns=headers,
+            data=rows,
+        )
+        run.log({"regression_sweep": table})
+        run.finish()
 
 
 if __name__ == "__main__":
