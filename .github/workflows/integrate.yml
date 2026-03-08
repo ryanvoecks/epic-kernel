@@ -1,0 +1,35 @@
+name: Integrate
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  integrate:
+    runs-on: ee-tromokratis
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install pre-commit hooks
+        run: uv run pre-commit install-hooks
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46.0.3
+
+      - name: Lint changed files
+        run: uv run pre-commit run --files ${{ steps.changed-files.outputs.all_changed_files }}
