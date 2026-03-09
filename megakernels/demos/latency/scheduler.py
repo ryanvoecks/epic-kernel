@@ -111,15 +111,18 @@ def make_globals(
         head_dim=config.head_dim,
         hidden_size=config.hidden_size,
         intermediate_size=config.intermediate_size,
-        # block sizes
+        # block sizes (computed from config so they work for any model size)
         up_gate_proj_block_size=16,
         down_proj_block_size=16,
         qkv_block_size=16,
         o_proj_block_size=16,
         lm_head_block_size=16,
-        matvec_reduction_size=2048,
+        # gcd ensures divisibility for both 1B (gcd(8192,2048)=2048) and
+        # 3B (gcd(8192,3072)=1024) without hardcoding per-model values.
+        matvec_reduction_size=math.gcd(config.intermediate_size, config.hidden_size),
         attn_kv_block_size=16,
-        attn_reduction_size=4,
+        # GQA ratio: num_attention_heads / num_kv_heads
+        attn_reduction_size=config.num_attention_heads // config.num_key_value_heads,
         vocab_size=config.vocab_size,
         device=device,
         barriers=barriers,
@@ -179,7 +182,7 @@ def schedule_downproj(globs: Globals, layer_idx: int):
     instructions: list[Instruction] = []
 
     num_down_blocks = assert_div(globs.hidden_size, globs.down_proj_block_size)
-    num_col_splits = globs.intermediate_size // globs.hidden_size
+    num_col_splits = assert_div(globs.intermediate_size, globs.matvec_reduction_size)
     sm_count = globs.sm_count()
 
     jobs = []
