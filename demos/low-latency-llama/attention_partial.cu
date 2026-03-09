@@ -87,7 +87,7 @@ template <typename config, typename globals> struct attention_partial {
 
     // QOL page layout:
     //   q_st: st_bf<16,head_dim> = head_dim*16*2 bytes
-    //   o_sv[GQA_RATIO]: GQA_RATIO × sv_fl<head_dim>
+    //   o_sv[GQA_RATIO]: GQA_RATIO x sv_fl<head_dim>
     //   l_sv: sv_fl<16>
     __device__ static inline q_st &get_Q_smem(megakernel::state<config> &s) {
         int pid = s.pid(QOL_PAGE);
@@ -104,7 +104,7 @@ template <typename config, typename globals> struct attention_partial {
             reinterpret_cast<char *>(s.pages[pid].data) + sizeof(q_st) +
             sizeof(o_sv) * GQA_RATIO);
     }
-    // KV page layout: NUM_STAGES × (K + V) tiles
+    // KV page layout: NUM_STAGES x (K + V) tiles
     __device__ static inline kv_st &get_K_smem(megakernel::state<config> &s, int stage) {
         int pid = s.pid(KV_PAGE);
         return *reinterpret_cast<kv_st *>(
@@ -224,7 +224,7 @@ template <typename config, typename globals> struct attention_partial {
         }
     }
 
-    // Load Q for GQA_RATIO heads × head_dim elements
+    // Load Q for GQA_RATIO heads x head_dim elements
     __device__ static inline void
     load_Q_async(q_st &dst, const globals::activations_t &src,
                  const int q_head_start_idx) {

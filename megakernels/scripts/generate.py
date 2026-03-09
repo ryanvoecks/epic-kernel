@@ -195,17 +195,17 @@ def main(config: ScriptConfig):
         print("Output ids: ", to_cpu)
         print("Output text: ", tokenizer.batch_decode(to_cpu))
 
-    if config.token_details:
-        ids_list = to_cpu.tolist()
-        tokens = tokenizer.convert_ids_to_tokens(ids_list)
+        if config.token_details:
+            ids_list = to_cpu.tolist()
+            tokens = tokenizer.convert_ids_to_tokens(ids_list)
 
-        table = []
-        for i, token in enumerate(tokens):
-            pos_id = i + prompt_len
-            table.append([i, pos_id, token])
+            table = []
+            for i, token in enumerate(tokens):
+                pos_id = i + prompt_len
+                table.append([i, pos_id, token])
 
-        print("More detailed output:")
-        print(tabulate(table, headers=["output id", "position id", "token"]))
+            print("More detailed output:")
+            print(tabulate(table, headers=["output id", "position id", "token"]))
 
     fwd_per_second = (config.ntok - 1) / elapsed
     print(f"Fwd per second: {fwd_per_second:.2f}")

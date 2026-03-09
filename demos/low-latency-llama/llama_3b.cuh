@@ -69,7 +69,7 @@ struct globals_t
 
     // TMA tile width for hidden_dim weights: 384 = hidden_dim(3072)/8.
     // Chosen so STAGE_PAGES=8 divides NUM_CONSUMER_WARPS=16 and
-    // each tile (16×384×2=12288 bytes) fits in one 16KB page.
+    // each tile (16x384x2=12288 bytes) fits in one 16KB page.
     static constexpr int weight_tile_cols = 384;
     using weights_t =
         kittens::gl<kittens::bf16, 1, -1, -1, hidden_dim,

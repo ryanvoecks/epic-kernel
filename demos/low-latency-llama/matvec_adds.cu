@@ -32,8 +32,8 @@ struct MatVecAddOp {
             end_block_idx = instruction[3];
             reduction_block_idx = instruction[4];
             // Use REDUCTION_DIM (not hidden_dim) to compute the start column.
-            // For o_proj: REDUCTION_DIM=3072, reduction_block_idx=0 → col=0.
-            // For downproj: REDUCTION_DIM=downproj_reduction_chunk_size, reduction_block_idx=0..N → col=0..N*chunk.
+            // For o_proj: REDUCTION_DIM=3072, reduction_block_idx=0 -> col=0.
+            // For downproj: REDUCTION_DIM=downproj_reduction_chunk_size, reduction_block_idx=0..N -> col=0..N*chunk.
             start_reduction_col = reduction_block_idx * REDUCTION_DIM;
             iters = end_block_idx - start_block_idx;
         }

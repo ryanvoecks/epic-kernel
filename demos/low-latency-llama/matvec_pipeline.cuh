@@ -8,11 +8,11 @@
 //
 // TILE_WIDTH and STAGE_PAGES are computed so that:
 //   1. STAGE_PAGES divides NUM_CONSUMER_WARPS (warp-to-page mapping)
-//   2. Each tile (16 × TILE_WIDTH × 2 bytes) fits in one page
+//   2. Each tile (16 x TILE_WIDTH x 2 bytes) fits in one page
 //   3. At least 1 pipeline stage fits in the page budget
 //
-//   hidden_dim=3072 → TILE_WIDTH=384, STAGE_PAGES=8, INPUT_PIPELINE_STAGES=1
-//   reduction=1024  → TILE_WIDTH=512, STAGE_PAGES=2, INPUT_PIPELINE_STAGES=6
+//   hidden_dim=3072 -> TILE_WIDTH=384, STAGE_PAGES=8, INPUT_PIPELINE_STAGES=1
+//   reduction=1024  -> TILE_WIDTH=512, STAGE_PAGES=2, INPUT_PIPELINE_STAGES=6
 template <typename Config, typename Globals, typename parsed_instruction,
           typename pipeline_specifics,
           int REDUCTION_DIM = Globals::hidden_dim>
@@ -126,7 +126,7 @@ struct matvec_pipeline {
         int last_stage =
             (iters > 0) ? ((iters - 1) % INPUT_PIPELINE_STAGES) : 0;
 
-        // Build release order: unused_stages → activation → used_stages (last
+        // Build release order: unused_stages -> activation -> used_stages (last
         // stage last)
         int order[TOTAL_ALLOC];
         int idx = 0;

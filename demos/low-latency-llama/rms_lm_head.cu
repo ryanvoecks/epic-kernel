@@ -10,7 +10,7 @@ using namespace megakernel;
 template <typename Config, typename Globals> struct rms_lm_head {
     static constexpr int opcode = OPCODE_RMS_LM_Head;
     // Total downproj barrier arrivals across all reduction blocks:
-    // (intermediate_size / matvec_reduction_size) × (hidden_dim / matvec_block_size)
+    // (intermediate_size / matvec_reduction_size) x (hidden_dim / matvec_block_size)
     static constexpr int EXPECTED_ARRIVAL_COUNT =
         (Globals::intermediate_dim / Globals::downproj_reduction_chunk_size) *
         (Globals::hidden_dim / Globals::matvec_block_size);

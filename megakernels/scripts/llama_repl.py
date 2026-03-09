@@ -45,7 +45,9 @@ class ScriptConfig(pydra.Config):
 @torch.inference_mode()
 def main(config: ScriptConfig):
     if config.model not in MODEL_CONFIGS:
-        raise ValueError(f"Unknown model '{config.model}'. Choose from: {list(MODEL_CONFIGS)}")
+        raise ValueError(
+            f"Unknown model '{config.model}'. Choose from: {list(MODEL_CONFIGS)}"
+        )
 
     model_cfg = MODEL_CONFIGS[config.model]
     hf_model = config.hf_model or model_cfg["hf_model"]

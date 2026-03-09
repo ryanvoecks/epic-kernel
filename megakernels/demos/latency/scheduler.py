@@ -22,7 +22,9 @@ from megakernels.utils import assert_div, get_sm_count
 B200_SM_COUNT = 160
 
 
-def pick_num_attention_partitions(prompt_len: int, ntok: int, num_kv_heads: int, device: torch.device):
+def pick_num_attention_partitions(
+    prompt_len: int, ntok: int, num_kv_heads: int, device: torch.device
+):
     min_chunk_size = 256
     full_len = prompt_len + ntok
 
@@ -288,7 +290,9 @@ def make_dag_layer(
     stop_after_op: str | None = None,
 ):
     actual_seq_len = globs.pos_id + 1
-    num_attention_partitions = pick_num_attention_partitions(actual_seq_len, 0, globs.num_kv_heads, globs.device)
+    num_attention_partitions = pick_num_attention_partitions(
+        actual_seq_len, 0, globs.num_kv_heads, globs.device
+    )
     # num_attention_partitions = 2 # temp hardcode
     globs.skip_attn_reduction = num_attention_partitions == 1
 
@@ -303,7 +307,7 @@ def make_dag_layer(
     qkv_deps = {}
 
     for node in qkv_nodes:
-        ins: LayerNorm_QKV_MatVecRopeAppend = node.instruction
+        ins = node.instruction
         for block_idx in ins.block_indices():
             qkv_deps[(layer_idx, ins.opcode(), block_idx)] = node
 
@@ -369,7 +373,9 @@ def make_dag_layer(
                 reduction_list=list(range(num_attention_partitions)),
                 output_partial_idx=None,
             )
-            deps = [n for n in partial_nodes if n.instruction.kv_head_idx == kv_head_idx]
+            deps = [
+                n for n in partial_nodes if n.instruction.kv_head_idx == kv_head_idx
+            ]
             reduction_nodes.append(DAG_Node(ins, deps))
         new_nodes.extend(reduction_nodes)
         o_proj_deps = reduction_nodes
