@@ -142,12 +142,7 @@ typedef globals_t<LLAMA_1B_NUM_LAYERS, LLAMA_1B_HIDDEN_DIM,
                   LLAMA_1B_INTERMEDIATE_DIM, LLAMA_1B_HEAD_DIM,
                   LLAMA_1B_NUM_ATTENTION_HEADS, LLAMA_1B_NUM_KV_HEADS,
                   LLAMA_1B_KV_BLOCK_SIZE, LLAMA_1B_MATVEC_BLOCK_SIZE,
-#ifndef KITTENS_BLACKWELL
-                  H100_SM_COUNT>
-#else
-                  B200_SM_COUNT>
-#endif
-    llama_1b_globals;
+                  B200_SM_COUNT> llama_1b_globals;
 
 template <typename config = config, typename globals = llama_1b_globals>
 struct attention_partial;
