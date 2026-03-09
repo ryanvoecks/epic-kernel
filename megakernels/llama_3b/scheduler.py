@@ -16,7 +16,7 @@ import math
 
 import torch
 
-from megakernels.llama_3b.instructions import (
+from megakernels.demos.latency.instructions import (
     AttentionReduction,
     DownProjResidual,
     Globals,

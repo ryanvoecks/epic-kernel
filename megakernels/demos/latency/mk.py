@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+
 import torch
 from einops import rearrange
 
@@ -50,5 +53,16 @@ def interpret_with_mk(
 
 
 class LatencyMK_Interpreter(MK_Interpreter):
+    def interpret(self, globs: Globals):
+        interpret_with_mk(globs, self.mk_func)
+
+
+class Latency3B_MK_Interpreter(MK_Interpreter):
+    def __init__(self, mk_dir: Path):
+        sys.path.append(str(mk_dir.expanduser().absolute()))
+        from mk_llama_3b import mk_llama_3b  # type: ignore
+
+        self.mk_func = mk_llama_3b
+
     def interpret(self, globs: Globals):
         interpret_with_mk(globs, self.mk_func)
