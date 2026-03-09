@@ -1,0 +1,43 @@
+name: CI Regression
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  ci:
+    runs-on: ee-tromokratis
+    defaults:
+      run:
+        shell: bash -el {0}
+    env:
+      THUNDERKITTENS_ROOT: ${{ github.workspace }}/ThunderKittens
+      MEGAKERNELS_ROOT: ${{ github.workspace }}
+      PYTHON_VERSION: "3.12"
+      GPU: B200
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv python install 3.12
+          uv sync
+          uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+      - name: Build CUDA megakernel
+        run: |
+          cd demos/low-latency-llama
+          uv run make PYTHON=python
+
+      - name: Run regression sweep
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: uv run python megakernels/scripts/regression.py wandb_project=megakernels-ci
