@@ -2,7 +2,8 @@
 
 #include "llama.cuh"
 
-template <typename Config, kittens::ducks::sv::all sv_t>
+// Parameterized RMS norm: uses Globals::hidden_dim instead of hardcoding 2048.
+template <typename Config, typename Globals, kittens::ducks::sv::all sv_t>
 __device__ static inline auto
 rms_norm(const sv_t &rms_scale_smem, const sv_t &activations_smem,
          float rms_norm_eps, void *scratch_memory) {
@@ -26,7 +27,8 @@ rms_norm(const sv_t &rms_scale_smem, const sv_t &activations_smem,
         full_sum += smem_rms_partial_sums[i];
     }
 
-    float variance = full_sum / 2048.0f;
+    // Use Globals::hidden_dim instead of hardcoding 2048
+    float variance = full_sum / static_cast<float>(Globals::hidden_dim);
     float rms_scale = rsqrtf(variance + rms_norm_eps);
 
     kittens::warp::mul(activations_vec, activations_vec, rms_scale);
@@ -44,7 +46,6 @@ __device__ static inline void matvec(kittens::sv_fl<st_t::rows> &out_smem,
     using rt_t = kittens::rt_bf<st_t::rows, st_t::cols>;
     using rrv_t = typename rt_t::row_vec;
     using rcv_t = typename kittens::rt_fl<16, 16>::col_vec;
-    // using rcv_t = typename rt_t::col_vec;
     using rv_t = kittens::rv_fl<st_t::rows>;
     using sv_t = kittens::sv_bf<st_t::rows>;
 
@@ -108,9 +109,6 @@ __device__ static inline void matvec_reduce(uint8_t *scratch, rv_t &sum_vec) {
 
 #pragma unroll
     for (int i = 0; i < Config::NUM_CONSUMER_WARPS; i++) {
-
-        // TODO: for now, deliberately not using sizeof(sv_t) here because we've
-        // had alignment issues before.
         sv_t &part =
             *reinterpret_cast<sv_t *>(scratch + (i * SCRATCH_BYTES_PER_WARP));
 
@@ -118,4 +116,3 @@ __device__ static inline void matvec_reduce(uint8_t *scratch, rv_t &sum_vec) {
         kittens::warp::add(sum_vec, sum_vec, part_vec);
     }
 }
-

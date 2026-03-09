@@ -1,3 +1,5 @@
+#pragma once
+
 #include "llama.cuh"
 #include "utils.cuh"
 #include "matvec_pipeline.cuh"
@@ -5,13 +7,13 @@
 using namespace kittens;
 using namespace megakernel;
 
-using globals = llama_1b_globals;
-
 template <typename Config, typename Globals> struct rms_lm_head {
-    static constexpr int opcode =
-        OPCODE_RMS_LM_Head; // Op index within the layer -- controls which
-                            // barrier to listen to.
-    static constexpr int EXPECTED_ARRIVAL_COUNT = 512;
+    static constexpr int opcode = OPCODE_RMS_LM_Head;
+    // Total downproj barrier arrivals across all reduction blocks:
+    // (intermediate_size / matvec_reduction_size) x (hidden_dim / matvec_block_size)
+    static constexpr int EXPECTED_ARRIVAL_COUNT =
+        (Globals::intermediate_dim / Globals::downproj_reduction_chunk_size) *
+        (Globals::hidden_dim / Globals::matvec_block_size);
 
     struct parsed_instruction {
         int start_block_idx, end_block_idx, iters;
@@ -29,23 +31,27 @@ template <typename Config, typename Globals> struct rms_lm_head {
         static __device__ inline void gmem_wait(const Globals &g,
                                                 megakernel::state<Config> &s) {
             parsed_instruction inst{s};
-            while (*(volatile int *)&g.Bar[{globals::num_layers - 1,
+            // Wait for ALL downproj blocks to finish on the last layer.
+            while (*(volatile int *)&g.Bar[{Globals::num_layers - 1,
                                             OPCODE_DownProjResidual - 1, 0}] <
                    EXPECTED_ARRIVAL_COUNT) {
                 __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
             }
         }
 
+        template <int TW>
         static __device__ inline void
-        load_iter(megakernel::state<Config> &s, const globals &g, parsed_instruction &inst,
-                  int iter, int col_idx, kittens::st_bf<16, 512> &weight_chunk,
+        load_iter(megakernel::state<Config> &s, const Globals &g,
+                  parsed_instruction &inst, int iter, int col_idx,
+                  kittens::st_bf<16, TW> &weight_chunk,
                   kittens::semaphore &sem) {
             auto block_idx = inst.start_block_idx + iter;
             kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
                 weight_chunk, g.lm_head_weights, {block_idx, col_idx}, sem);
         }
 
-        static __device__ inline void store(megakernel::state<Config> &s, const Globals &g,
+        static __device__ inline void store(megakernel::state<Config> &s,
+                                            const Globals &g,
                                             parsed_instruction &inst,
                                             int output_idx, int output_stage) {
 
@@ -95,22 +101,26 @@ template <typename Config, typename Globals> struct rms_lm_head {
         }
     };
     struct loader {
-        static __device__ void run(const Globals &g, megakernel::state<Config> &s) {
+        static __device__ void run(const Globals &g,
+                                   megakernel::state<Config> &s) {
             pipeline::loader_loop(s, g, 0);
         }
     };
     struct launcher {
-        static __device__ void run(const Globals &g, megakernel::state<Config> &s) {
+        static __device__ void run(const Globals &g,
+                                   megakernel::state<Config> &s) {
             pipeline::launcher_loop(s, g);
         }
     };
     struct consumer {
-        static __device__ void run(const Globals &g, megakernel::state<Config> &s) {
+        static __device__ void run(const Globals &g,
+                                   megakernel::state<Config> &s) {
             pipeline::consumer_loop(s, g);
         }
     };
     struct storer {
-        static __device__ void run(const Globals &g, megakernel::state<Config> &s) {
+        static __device__ void run(const Globals &g,
+                                   megakernel::state<Config> &s) {
             pipeline::storer_loop(s, g);
         }
     };

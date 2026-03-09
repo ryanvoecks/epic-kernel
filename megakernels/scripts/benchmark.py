@@ -10,7 +10,6 @@ from megakernels.dispatch import (
     make_pyvm_interpreter,
     make_schedule_builder,
 )
-from megakernels.utils import get_free_gpu
 from megakernels.generators import (
     MK_Generator,
     PyTorchGenerator,
@@ -22,6 +21,7 @@ from megakernels.scheduler import (
     assign_to_sms,
     tensorize_instructions,
 )
+from megakernels.utils import get_free_gpu
 
 
 class ScriptConfig(pydra.Config):
@@ -31,7 +31,7 @@ class ScriptConfig(pydra.Config):
     output_tokens: int = 128
     mode: str = "mk"
     interleave_rope: bool = True
-    mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
+    mk_dir: Path = Path(__file__).parent.parent.parent / "build"
     num_warmup: int = 10
     num_iters: int = 30
     barrier_fill_val: int = 0
@@ -58,11 +58,16 @@ class ScriptConfig(pydra.Config):
     def l8(self):
         self.model = "meta-llama/Llama-3.1-8B-Instruct"
 
+    def l3(self):
+        self.model = "meta-llama/Llama-3.2-3B-Instruct"
+        self.setting = "latency_3b"
+        self.mk_dir = Path(__file__).parent.parent.parent / "build"
+
 
 def run_benchmark(config, model, input_tokens, output_tokens):
     """Build schedule, create generator, run warmup + timed iters.
 
-    Returns (wall_latencies, gpu_latencies) — one entry per measured iteration,
+    Returns (wall_latencies, gpu_latencies) - one entry per measured iteration,
     with warmup iterations already excluded.
     """
     schedule_builder = make_schedule_builder(config.setting)
@@ -107,7 +112,10 @@ def run_benchmark(config, model, input_tokens, output_tokens):
 
     latencies = []
     gpu_latencies = []
-    for _ in tqdm(range(config.num_warmup + config.num_iters), desc=f"in={input_tokens} out={output_tokens}"):
+    for _ in tqdm(
+        range(config.num_warmup + config.num_iters),
+        desc=f"in={input_tokens} out={output_tokens}",
+    ):
         out_buf.zero_()
 
         start_event = torch.cuda.Event(enable_timing=True)
@@ -129,7 +137,7 @@ def run_benchmark(config, model, input_tokens, output_tokens):
         latencies.append(end - start)
         gpu_latencies.append(start_event.elapsed_time(end_event) / 1000)
 
-    return latencies[config.num_warmup:], gpu_latencies[config.num_warmup:]
+    return latencies[config.num_warmup :], gpu_latencies[config.num_warmup :]
 
 
 @torch.inference_mode()
@@ -157,7 +165,9 @@ def main(config: ScriptConfig):
 
     avg_latency = sum(latencies) / len(latencies)
     avg_gpu_latency = sum(gpu_latencies) / len(gpu_latencies)
-    print(f"Avg latency: {avg_latency * 1000:.2f}ms (GPU: {avg_gpu_latency * 1000:.2f}ms)")
+    print(
+        f"Avg latency: {avg_latency * 1000:.2f}ms (GPU: {avg_gpu_latency * 1000:.2f}ms)"
+    )
 
     sorted_latencies = sorted(latencies)
     n = len(sorted_latencies)

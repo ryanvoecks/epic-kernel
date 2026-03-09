@@ -6,15 +6,15 @@ For each SM and instruction, extracts the barrier wait window
 and produces:
 
 Figures (interactive HTML via Bokeh):
-  1. Stall count timeline — how many SMs are simultaneously waiting on
+  1. Stall count timeline - how many SMs are simultaneously waiting on
      a barrier at each point in time (stacked area by instruction type).
-  2. Barrier wait fraction — fraction of total SM-time spent barrier-waiting.
-  3. Per-SM total barrier wait — bar chart showing which SMs wait the most.
-  4. Per-instruction scatter — each dot is one instruction's barrier wait,
+  2. Barrier wait fraction - fraction of total SM-time spent barrier-waiting.
+  3. Per-SM total barrier wait - bar chart showing which SMs wait the most.
+  4. Per-instruction scatter - each dot is one instruction's barrier wait,
      x=time, y=wait duration, colored by opcode. Hover shows producer.
-  5. Per-layer barrier wait — bar chart (stacked by opcode) showing total
+  5. Per-layer barrier wait - bar chart (stacked by opcode) showing total
      barrier wait time per transformer layer.
-  6. Per-opcode summary — horizontal bar chart of total barrier wait by
+  6. Per-opcode summary - horizontal bar chart of total barrier wait by
      instruction type, showing which operations are the biggest waiters.
 
 Console output:
@@ -54,7 +54,7 @@ from bokeh.palettes import Category10
 from bokeh.plotting import figure, save
 from bokeh.resources import INLINE
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# -- Constants ----------------------------------------------------------------
 
 CYCLE_FREQ_MHZ = 1800.0  # H100/B200 SM clock ~1.8 GHz
 
@@ -81,37 +81,37 @@ COLOR_MAP = {
     **{k: _palette[k - 1] for k in range(1, max(INSTRUCTION_MAP.keys()) + 1)},
 }
 
-# ── Producer dependency map ──────────────────────────────────────────────────
+# -- Producer dependency map --------------------------------------------------
 # Verified against CUDA source (barrier indices in each op's gmem_wait):
 #
 #   QKV (1): rms_matvec_rope_append.cu:53-54
 #       Bar[{layer_idx - 1, OPCODE_DownProjResidual - 1, 0}]
-#       → waits on DownProj (6) of the PREVIOUS layer. Layer 0 doesn't wait.
+#       -> waits on DownProj (6) of the PREVIOUS layer. Layer 0 doesn't wait.
 #
 #   PartialAttention (2): attention_partial.cu:314-316
 #       Bar[{layer_idx, OPCODE_RMS_QKV_MatVecRopeAppend - 1, kv_head + NUM_ATTN_HEADS}]
-#       → waits on QKV (1) of the SAME layer.
+#       -> waits on QKV (1) of the SAME layer.
 #
 #   AttentionReduction (3): attention_reduction.cu:194-195
 #       Bar[{layer_idx, prev_opcode(=2) - 1, kv_head_idx}]
-#       → waits on PartialAttention (2) of the SAME layer.
+#       -> waits on PartialAttention (2) of the SAME layer.
 #
 #   O_ProjResidual (4): matvec_adds.cu:129, prev_opcode = OPCODE_O_ProjResidual - 1 = 3
 #       Bar[{layer, prev_opcode - 1, reduction_block_idx}]
-#       → waits on AttentionReduction (3) of the SAME layer.
+#       -> waits on AttentionReduction (3) of the SAME layer.
 #
 #   UpGate/SiLU (5): upgate.cu:14,36
 #       prev_opcode = OPCODE_O_ProjResidual = 4
 #       Bar[{layer_idx, prev_opcode - 1, 0}]
-#       → waits on O_ProjResidual (4) of the SAME layer.
+#       -> waits on O_ProjResidual (4) of the SAME layer.
 #
 #   DownProj (6): matvec_adds.cu:186, prev_opcode = OPCODE_DownProjResidual - 1 = 5
 #       Bar[{layer, prev_opcode - 1, reduction_block_idx}]
-#       → waits on UpGate/SiLU (5) of the SAME layer.
+#       -> waits on UpGate/SiLU (5) of the SAME layer.
 #
 #   LM Head (7): rms_lm_head.cu:32
 #       Bar[{num_layers - 1, OPCODE_DownProjResidual - 1, 0}]
-#       → waits on DownProj (6) of the LAST layer.
+#       -> waits on DownProj (6) of the LAST layer.
 
 PRODUCER_MAP = {
     # opcode: (producer_opcode, producer_name, layer_relationship)
@@ -125,7 +125,7 @@ PRODUCER_MAP = {
 }
 
 
-# ── Data extraction ──────────────────────────────────────────────────────────
+# -- Data extraction ----------------------------------------------------------
 
 
 def build_barrier_data(pkl_path: Path, num_bins: int = 2000):
@@ -143,13 +143,15 @@ def build_barrier_data(pkl_path: Path, num_bins: int = 2000):
     per_sm_wait_cycles = torch.zeros(num_sms)
 
     # Per-opcode aggregation
-    opcode_stats = defaultdict(lambda: {
-        "count": 0,
-        "total_wait_us": 0.0,
-        "total_instr_us": 0.0,
-    })
+    opcode_stats = defaultdict(
+        lambda: {
+            "count": 0,
+            "total_wait_us": 0.0,
+            "total_instr_us": 0.0,
+        }
+    )
 
-    # Per-layer aggregation (layer_idx → {opcode → total_wait_us})
+    # Per-layer aggregation (layer_idx -> {opcode -> total_wait_us})
     layer_stats = defaultdict(lambda: defaultdict(float))
     layer_instr_count = defaultdict(int)
 
@@ -190,9 +192,7 @@ def build_barrier_data(pkl_path: Path, num_bins: int = 2000):
             wait_duration = wait_end - wait_start
             instr_duration = instr_end - instr_start
 
-            events.append(
-                (wait_start, wait_end, instr_start, instr_end, opcode, sm, i)
-            )
+            events.append((wait_start, wait_end, instr_start, instr_end, opcode, sm, i))
             per_sm_wait_cycles[sm] += wait_duration
 
             wait_duration_us = wait_duration / CYCLE_FREQ_MHZ
@@ -257,7 +257,7 @@ def build_barrier_data(pkl_path: Path, num_bins: int = 2000):
         print(f"  WARNING: No valid instructions found in {pkl_path}")
         return None
 
-    # ── Bin barrier wait events into time bins ────────────────────────────
+    # -- Bin barrier wait events into time bins ----------------------------
     bin_edges = torch.linspace(global_start, global_end, num_bins + 1)
     bin_width_cycles = (global_end - global_start) / num_bins
 
@@ -270,9 +270,7 @@ def build_barrier_data(pkl_path: Path, num_bins: int = 2000):
             continue
 
         first_bin = max(0, int((wait_start - global_start) / bin_width_cycles))
-        last_bin = min(
-            num_bins - 1, int((wait_end - global_start) / bin_width_cycles)
-        )
+        last_bin = min(num_bins - 1, int((wait_end - global_start) / bin_width_cycles))
 
         if first_bin == last_bin:
             frac = wait_duration / bin_width_cycles
@@ -301,7 +299,7 @@ def build_barrier_data(pkl_path: Path, num_bins: int = 2000):
     for op in range(8):
         stall_by_op[op] = bin_stall_by_op[op].tolist()
 
-    # ── Per-SM summary ────────────────────────────────────────────────────
+    # -- Per-SM summary ----------------------------------------------------
     per_sm_wait_us = (per_sm_wait_cycles / CYCLE_FREQ_MHZ).tolist()
 
     per_sm_total_us = []
@@ -331,9 +329,7 @@ def build_barrier_data(pkl_path: Path, num_bins: int = 2000):
     )
 
     # Convert layer_stats to serializable form: {layer_idx: {opcode: us}}
-    layer_stats_dict = {
-        layer: dict(ops) for layer, ops in sorted(layer_stats.items())
-    }
+    layer_stats_dict = {layer: dict(ops) for layer, ops in sorted(layer_stats.items())}
     layer_instr_count_dict = dict(sorted(layer_instr_count.items()))
 
     return {
@@ -356,13 +352,13 @@ def build_barrier_data(pkl_path: Path, num_bins: int = 2000):
     }
 
 
-# ── Console output ───────────────────────────────────────────────────────────
+# -- Console output -----------------------------------------------------------
 
 
 def print_summary(bdata: dict, label: str):
     """Print detailed text summary to console."""
     print(f"\n{'=' * 72}")
-    print(f"  {label} — Barrier Wait Summary")
+    print(f"  {label} - Barrier Wait Summary")
     print(f"{'=' * 72}")
 
     print(
@@ -377,10 +373,10 @@ def print_summary(bdata: dict, label: str):
         f"total barrier wait: {bdata['total_wait_us']:.1f} SM-us"
     )
 
-    # ── Per-opcode table ──────────────────────────────────────────────────
-    print(f"\n  {'─' * 68}")
+    # -- Per-opcode table --------------------------------------------------
+    print(f"\n  {'-' * 68}")
     print("  Per-Opcode Barrier Wait Breakdown")
-    print(f"  {'─' * 68}")
+    print(f"  {'-' * 68}")
     print(
         f"  {'Opcode':<30s} {'Count':>6s} {'Avg Wait':>10s} "
         f"{'Avg Dur':>10s} {'Wait%':>7s} {'Tot Wait':>10s}"
@@ -408,10 +404,10 @@ def print_summary(bdata: dict, label: str):
             f"{avg_dur:>9.2f}u {wait_pct:>6.1f}% {total_wait:>9.1f}u"
         )
 
-    # ── Producer identification ───────────────────────────────────────────
-    print(f"\n  {'─' * 68}")
+    # -- Producer identification -------------------------------------------
+    print(f"\n  {'-' * 68}")
     print("  Barrier Dependency Chain (what each operation waits FOR)")
-    print(f"  {'─' * 68}")
+    print(f"  {'-' * 68}")
     for opcode in sorted(PRODUCER_MAP.keys()):
         if opcode not in opcode_stats:
             continue
@@ -419,18 +415,19 @@ def print_summary(bdata: dict, label: str):
         waiter = INSTRUCTION_MAP[opcode]
         total = opcode_stats[opcode]["total_wait_us"]
         print(
-            f"  {waiter:<30s} waits on {prod_name} ({prod_rel})"
-            f"  [{total:.1f} us total]"
+            f"  {waiter:<30s} waits on {prod_name} ({prod_rel})  [{total:.1f} us total]"
         )
 
-    # ── Per-layer table ───────────────────────────────────────────────────
+    # -- Per-layer table ---------------------------------------------------
     layer_stats = bdata["layer_stats"]
     layer_counts = bdata["layer_instr_count"]
     if layer_stats:
-        print(f"\n  {'─' * 68}")
+        print(f"\n  {'-' * 68}")
         print("  Per-Layer Barrier Wait")
-        print(f"  {'─' * 68}")
-        print(f"  {'Layer':<10s} {'# Waits':>8s} {'Total Wait':>12s} {'Top Waiter':<30s}")
+        print(f"  {'-' * 68}")
+        print(
+            f"  {'Layer':<10s} {'# Waits':>8s} {'Total Wait':>12s} {'Top Waiter':<30s}"
+        )
         print(f"  {'':-<10s} {'':-<8s} {'':-<12s} {'':-<30s}")
 
         for layer_idx in sorted(layer_stats.keys()):
@@ -448,16 +445,16 @@ def print_summary(bdata: dict, label: str):
                 f"{top_name} ({top_pct:.0f}%)"
             )
 
-    # ── HBM correlation note ──────────────────────────────────────────────
-    print(f"\n  {'─' * 68}")
+    # -- HBM correlation note ----------------------------------------------
+    print(f"\n  {'-' * 68}")
     print("  Note: Time axis (us) uses the same coordinate system as")
     print("  plot_hbm_utilization.py. To correlate barrier stalls with HBM")
     print("  underutilization, generate both plots and compare time ranges")
     print("  where barrier stall count is high with HBM bandwidth dips.")
-    print(f"  {'─' * 68}\n")
+    print(f"  {'-' * 68}\n")
 
 
-# ── Figure builders ──────────────────────────────────────────────────────────
+# -- Figure builders ----------------------------------------------------------
 
 
 def make_stall_count_figure(bdata: dict, title: str, x_range=None):
@@ -467,7 +464,7 @@ def make_stall_count_figure(bdata: dict, title: str, x_range=None):
     kwargs = dict(
         width=1200,
         height=400,
-        title=f"{title} — SMs Stalled on Barriers",
+        title=f"{title} - SMs Stalled on Barriers",
         x_axis_label="Time (us)",
         y_axis_label="# SMs waiting",
         tools="pan,wheel_zoom,box_zoom,reset,save",
@@ -492,9 +489,7 @@ def make_stall_count_figure(bdata: dict, title: str, x_range=None):
             fill_alpha=0.7,
             fill_color=COLOR_MAP[opcode],
         )
-        legend_items.append(
-            LegendItem(label=INSTRUCTION_MAP[opcode], renderers=[r])
-        )
+        legend_items.append(LegendItem(label=INSTRUCTION_MAP[opcode], renderers=[r]))
         bottom = top
 
     src_total = ColumnDataSource({"x": bins, "y": bdata["stall_count"]})
@@ -511,9 +506,7 @@ def make_stall_count_figure(bdata: dict, title: str, x_range=None):
         line_dash="dashed",
         line_width=1,
     )
-    legend_items.append(
-        LegendItem(label=f"All SMs ({num_sms})", renderers=[sm_line])
-    )
+    legend_items.append(LegendItem(label=f"All SMs ({num_sms})", renderers=[sm_line]))
 
     legend = Legend(
         items=legend_items,
@@ -536,7 +529,7 @@ def make_stall_frac_figure(bdata: dict, title: str, x_range=None):
     kwargs = dict(
         width=1200,
         height=300,
-        title=f"{title} — Barrier Wait Fraction (% of SMs)",
+        title=f"{title} - Barrier Wait Fraction (% of SMs)",
         x_axis_label="Time (us)",
         y_axis_label="SMs waiting (%)",
         tools="pan,wheel_zoom,box_zoom,reset,save",
@@ -579,9 +572,7 @@ def make_per_sm_figure(bdata: dict, title: str):
     num_sms = bdata["num_sms"]
     wait_us = bdata["per_sm_wait_us"]
     total_us = bdata["per_sm_total_us"]
-    wait_frac = [
-        (w / t * 100) if t > 0 else 0.0 for w, t in zip(wait_us, total_us)
-    ]
+    wait_frac = [(w / t * 100) if t > 0 else 0.0 for w, t in zip(wait_us, total_us)]
 
     src = ColumnDataSource(
         {
@@ -595,7 +586,7 @@ def make_per_sm_figure(bdata: dict, title: str):
     p = figure(
         width=1200,
         height=300,
-        title=f"{title} — Per-SM Total Barrier Wait",
+        title=f"{title} - Per-SM Total Barrier Wait",
         x_axis_label="SM index",
         y_axis_label="Barrier wait (us)",
         tools="pan,wheel_zoom,box_zoom,reset,save",
@@ -650,7 +641,7 @@ def make_scatter_figure(bdata: dict, title: str, x_range=None):
     kwargs = dict(
         width=1200,
         height=350,
-        title=f"{title} — Per-Instruction Barrier Wait Duration",
+        title=f"{title} - Per-Instruction Barrier Wait Duration",
         x_axis_label="Time (us)",
         y_axis_label="Wait duration (us)",
         tools="pan,wheel_zoom,box_zoom,reset,save",
@@ -722,14 +713,12 @@ def make_per_layer_figure(bdata: dict, title: str):
         return None
 
     sorted_layers = sorted(layer_stats.keys())
-    layer_labels = [
-        f"L{l}" if l >= 0 else "LM" for l in sorted_layers
-    ]
+    layer_labels = [f"L{layer}" if layer >= 0 else "LM" for layer in sorted_layers]
 
     p = figure(
         width=1200,
         height=300,
-        title=f"{title} — Per-Layer Total Barrier Wait",
+        title=f"{title} - Per-Layer Total Barrier Wait",
         x_axis_label="Layer",
         y_axis_label="Barrier wait (us)",
         x_range=layer_labels,
@@ -741,9 +730,7 @@ def make_per_layer_figure(bdata: dict, title: str):
     bottoms = [0.0] * len(sorted_layers)
 
     for opcode in [1, 2, 3, 4, 5, 6, 7]:
-        values = [
-            layer_stats[l].get(opcode, 0.0) for l in sorted_layers
-        ]
+        values = [layer_stats[layer].get(opcode, 0.0) for layer in sorted_layers]
         if not any(v > 0 for v in values):
             continue
 
@@ -767,9 +754,7 @@ def make_per_layer_figure(bdata: dict, title: str):
             color=COLOR_MAP[opcode],
             alpha=0.8,
         )
-        legend_items.append(
-            LegendItem(label=INSTRUCTION_MAP[opcode], renderers=[r])
-        )
+        legend_items.append(LegendItem(label=INSTRUCTION_MAP[opcode], renderers=[r]))
         bottoms = tops
 
     if legend_items:
@@ -802,8 +787,7 @@ def make_per_opcode_figure(bdata: dict, title: str):
     counts = [s["count"] for _, s in sorted_ops]
     colors = [COLOR_MAP.get(op, "#808080") for op, _ in sorted_ops]
     avg_waits = [
-        s["total_wait_us"] / s["count"] if s["count"] > 0 else 0
-        for _, s in sorted_ops
+        s["total_wait_us"] / s["count"] if s["count"] > 0 else 0 for _, s in sorted_ops
     ]
     wait_pcts = [
         (s["total_wait_us"] / s["total_instr_us"] * 100)
@@ -835,7 +819,7 @@ def make_per_opcode_figure(bdata: dict, title: str):
     p = figure(
         width=1200,
         height=300,
-        title=f"{title} — Total Barrier Wait by Instruction Type",
+        title=f"{title} - Total Barrier Wait by Instruction Type",
         x_axis_label="Total barrier wait (us)",
         y_range=list(reversed(names)),
         tools="pan,wheel_zoom,box_zoom,reset,save",
@@ -869,7 +853,7 @@ def make_per_opcode_figure(bdata: dict, title: str):
     return p
 
 
-# ── Entry point ──────────────────────────────────────────────────────────────
+# -- Entry point --------------------------------------------------------------
 
 
 def build_plots(bdata: dict, label: str):
@@ -938,7 +922,7 @@ def main():
     save(
         layout,
         filename=str(args.output),
-        title=f"Barrier Waits — {args.label}",
+        title=f"Barrier Waits - {args.label}",
         resources=INLINE,
     )
     print(f"Saved -> {args.output}")

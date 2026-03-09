@@ -7,36 +7,29 @@ using namespace megakernel;
 
 template <typename config, typename globals> struct attention_partial {
     static constexpr int opcode = OPCODE_PartialAttention;
-    static constexpr int NUM_STAGES = 3;
+    // NUM_STAGES is model-dependent
+    static constexpr int NUM_STAGES = globals::num_stages;
     static constexpr int GQA_RATIO =
-        LLAMA_1B_NUM_ATTENTION_HEADS / LLAMA_1B_NUM_KV_HEADS;
+        globals::num_attention_heads / globals::num_kv_heads;
     static constexpr int QOL_PAGE = 0;
     static constexpr int KV_PAGE = 1;
 
-    static_assert(GQA_RATIO == 4, "GQA_RATIO must be 4.");
-    static_assert(NUM_STAGES <= 4, "Modify page allocation for KVs.");
-
-    using q_rt = kittens::rt_bf<16, LLAMA_1B_HEAD_DIM>; // only 4 rows are used
-    using q_st = kittens::st_bf<16, LLAMA_1B_HEAD_DIM>; // only 4 rows are used
-    using k_rt = kittens::rt_bf<LLAMA_1B_KV_BLOCK_SIZE, LLAMA_1B_HEAD_DIM>;
-    using v_rt = kittens::rt_bf<LLAMA_1B_KV_BLOCK_SIZE, LLAMA_1B_HEAD_DIM, col_l>;
-    using kv_st = kittens::st_bf<LLAMA_1B_KV_BLOCK_SIZE, LLAMA_1B_HEAD_DIM>;
-    using attn_fl_rt =
-        kittens::rt_fl<16, LLAMA_1B_KV_BLOCK_SIZE>; // only 4 values are used
-    using attn_bf_rt =
-        kittens::rt_bf<16, LLAMA_1B_KV_BLOCK_SIZE>; // only 4 values are used
-    using max_vec_rv =
-        col_vec<kittens::rt_fl<16, LLAMA_1B_HEAD_DIM>>; // only 4 values are used
-    using max_vec_sv = kittens::sv_fl<16>;              // only 4 values are used
-    using norm_vec_rv =
-        col_vec<kittens::rt_fl<16, LLAMA_1B_HEAD_DIM>>; // only 4 values are used
-    using norm_vec_sv = kittens::sv_fl<16>;             // only 4 values are used
-    using l_rv =
-        col_vec<kittens::rt_fl<16, LLAMA_1B_HEAD_DIM>>; // only 4 values are used
-    using l_sv = kittens::sv_fl<16>;                    // only 4 values are used
-    using o_rt = kittens::rt_fl<16, LLAMA_1B_HEAD_DIM>; // only 4 rows are used
-    using o_sv = kittens::sv_fl<LLAMA_1B_HEAD_DIM>;
-    using o_sv_bf = kittens::sv_bf<LLAMA_1B_HEAD_DIM>;
+    using q_rt = kittens::rt_bf<16, globals::head_dim>;
+    using q_st = kittens::st_bf<16, globals::head_dim>;
+    using k_rt = kittens::rt_bf<globals::kv_block_size, globals::head_dim>;
+    using v_rt = kittens::rt_bf<globals::kv_block_size, globals::head_dim, col_l>;
+    using kv_st = kittens::st_bf<globals::kv_block_size, globals::head_dim>;
+    using attn_fl_rt = kittens::rt_fl<16, globals::kv_block_size>;
+    using attn_bf_rt = kittens::rt_bf<16, globals::kv_block_size>;
+    using max_vec_rv = col_vec<kittens::rt_fl<16, globals::head_dim>>;
+    using max_vec_sv = kittens::sv_fl<16>;
+    using norm_vec_rv = col_vec<kittens::rt_fl<16, globals::head_dim>>;
+    using norm_vec_sv = kittens::sv_fl<16>;
+    using l_rv = col_vec<kittens::rt_fl<16, globals::head_dim>>;
+    using l_sv = kittens::sv_fl<16>;
+    using o_rt = kittens::rt_fl<16, globals::head_dim>;
+    using o_sv = kittens::sv_fl<globals::head_dim>;
+    using o_sv_bf = kittens::sv_bf<globals::head_dim>;
 
     struct parsed_instruction {
         int layer_idx;
@@ -54,7 +47,7 @@ template <typename config, typename globals> struct attention_partial {
             : parsed_instruction(s.instruction()) {}
     };
 
-    // We have 32 dynamic kittens::semaphores total
+    // Semaphores
     __device__ static inline kittens::semaphore &Q_arrived(megakernel::state<config> &s) {
         return s.semaphores()[0];
     }
@@ -70,12 +63,10 @@ template <typename config, typename globals> struct attention_partial {
     __device__ static inline kittens::semaphore &V_arrived(megakernel::state<config> &s, int stage) {
         return s.semaphores()[3 + stage * 2 + 1];
     }
-    __device__ static inline kittens::semaphore &K_finished(megakernel::state<config> &s,
-                                                   int stage) {
+    __device__ static inline kittens::semaphore &K_finished(megakernel::state<config> &s, int stage) {
         return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2];
     }
-    __device__ static inline kittens::semaphore &V_finished(megakernel::state<config> &s,
-                                                   int stage) {
+    __device__ static inline kittens::semaphore &V_finished(megakernel::state<config> &s, int stage) {
         return s.semaphores()[3 + NUM_STAGES * 2 + stage * 2 + 1];
     }
 
@@ -93,21 +84,27 @@ template <typename config, typename globals> struct attention_partial {
         if (kittens::warp::laneid() == 0)
             s.finish_page(s.pid(KV_PAGE), config::NUM_CONSUMER_WARPS);
     }
+
+    // QOL page layout:
+    //   q_st: st_bf<16,head_dim> = head_dim*16*2 bytes
+    //   o_sv[GQA_RATIO]: GQA_RATIO x sv_fl<head_dim>
+    //   l_sv: sv_fl<16>
     __device__ static inline q_st &get_Q_smem(megakernel::state<config> &s) {
         int pid = s.pid(QOL_PAGE);
         return *reinterpret_cast<q_st *>(s.pages[pid].data);
     }
-    __device__ static inline o_sv (&get_O_smem(megakernel::state<config> &s))[4] {
+    __device__ static inline o_sv (&get_O_smem(megakernel::state<config> &s))[GQA_RATIO] {
         int pid = s.pid(QOL_PAGE);
-        return *reinterpret_cast<o_sv(*)[4]>(
+        return *reinterpret_cast<o_sv(*)[GQA_RATIO]>(
             reinterpret_cast<char *>(s.pages[pid].data) + sizeof(q_st));
     }
     __device__ static inline l_sv &get_L_smem(megakernel::state<config> &s) {
         int pid = s.pid(QOL_PAGE);
         return *reinterpret_cast<l_sv *>(
             reinterpret_cast<char *>(s.pages[pid].data) + sizeof(q_st) +
-            sizeof(o_sv) * 4);
+            sizeof(o_sv) * GQA_RATIO);
     }
+    // KV page layout: NUM_STAGES x (K + V) tiles
     __device__ static inline kv_st &get_K_smem(megakernel::state<config> &s, int stage) {
         int pid = s.pid(KV_PAGE);
         return *reinterpret_cast<kv_st *>(
@@ -121,94 +118,78 @@ template <typename config, typename globals> struct attention_partial {
             sizeof(kv_st) * (1 + stage * 2));
     }
 
+    // Store GQA_RATIO rows from a 16-row register tile into GQA_RATIO separate sv_fl<head_dim> vectors.
     template <ducks::sv::all SV, ducks::rt::all RT>
     __device__ static inline void
-    store_4_rows(SV (&dst)[4], const RT &src, int row4idx /*= 0, 1, 2, or 3*/) {
+    store_gqa_rows(SV (&dst)[GQA_RATIO], const RT &src, int row3idx /*= 0, 1, or 2*/) {
         static_assert(RT::rows == 16, "src rows must be 16.");
-        static_assert(SV::length == src.cols,
-                      "dst length must match src cols.");
+        static_assert(SV::length == src.cols, "dst length must match src cols.");
 
         using T2 = RT::dtype;
         using T = base_types::packing<T2>::unpacked_type;
         using U = SV::dtype;
         using U2 = base_types::packing<U>::packed_type;
 
-        uint32_t dst_ptr[4];
-        dst_ptr[0] =
-            static_cast<uint32_t>(__cvta_generic_to_shared(&dst[0].data[0]));
-        dst_ptr[1] =
-            static_cast<uint32_t>(__cvta_generic_to_shared(&dst[1].data[0]));
-        dst_ptr[2] =
-            static_cast<uint32_t>(__cvta_generic_to_shared(&dst[2].data[0]));
-        dst_ptr[3] =
-            static_cast<uint32_t>(__cvta_generic_to_shared(&dst[3].data[0]));
+        uint32_t dst_ptr[GQA_RATIO];
+        for (int i = 0; i < GQA_RATIO; i++) {
+            dst_ptr[i] = static_cast<uint32_t>(__cvta_generic_to_shared(&dst[i].data[0]));
+        }
 
         int laneid = kittens::warp::laneid();
         int local_row_idx = (laneid % 16) / 4;
         int local_col_idx = laneid % 4;
 
-        if (row4idx % 2 == 0 && laneid < 16) { // rows 0~3 or 8~11
-            if (row4idx / 2 == 0) {            // rows 0~3
+        if (row3idx % 2 == 0 && laneid < 16) {
+            if (row3idx / 2 == 0) {  // rows 0-3
                 for (int j = 0; j < src.width; j++) {
                     U2 tmp[2];
-                    tmp[0] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[0]);
-                    tmp[1] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[2]); // note 2, not 1
+                    tmp[0] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[0]);
+                    tmp[1] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[2]);
                     int col_idx = local_col_idx * 2 + j * 16;
-                    move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx,
-                                  tmp[0]);
-                    move<U2>::sts(dst_ptr[local_row_idx] +
-                                      sizeof(U) * (col_idx + 8),
-                                  tmp[1]);
+                    if (local_row_idx < GQA_RATIO) {
+                        move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
+                        move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
+                    }
                 }
-            } else { // rows 8~11
+            } else {  // rows 8-11
                 for (int j = 0; j < src.width; j++) {
                     U2 tmp[2];
-                    tmp[0] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[1]);
-                    tmp[1] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[3]);
+                    tmp[0] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[1]);
+                    tmp[1] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[3]);
                     int col_idx = local_col_idx * 2 + j * 16;
-                    move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx,
-                                  tmp[0]);
-                    move<U2>::sts(dst_ptr[local_row_idx] +
-                                      sizeof(U) * (col_idx + 8),
-                                  tmp[1]);
+                    if (local_row_idx < GQA_RATIO) {
+                        move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
+                        move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
+                    }
                 }
             }
-        } else if (row4idx % 2 == 1 && laneid >= 16) { // rows 4~7 or 12~15
-            if (row4idx / 2 == 0) {                    // rows 4~7
+        } else if (row3idx % 2 == 1 && laneid >= 16) {  // rows 4-7
+            if (row3idx / 2 == 0) {
                 for (int j = 0; j < src.width; j++) {
                     U2 tmp[2];
-                    tmp[0] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[0]);
-                    tmp[1] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[2]); // note 2, not 1
+                    tmp[0] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[0]);
+                    tmp[1] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[2]);
                     int col_idx = local_col_idx * 2 + j * 16;
-                    move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx,
-                                  tmp[0]);
-                    move<U2>::sts(dst_ptr[local_row_idx] +
-                                      sizeof(U) * (col_idx + 8),
-                                  tmp[1]);
+                    if (local_row_idx < GQA_RATIO) {
+                        move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
+                        move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
+                    }
                 }
-            } else { // rows 12~15
+            } else {  // rows 12-15
                 for (int j = 0; j < src.width; j++) {
                     U2 tmp[2];
-                    tmp[0] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[1]);
-                    tmp[1] = base_types::convertor<U2, T2>::convert(
-                        src.tiles[0][j].data[3]);
+                    tmp[0] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[1]);
+                    tmp[1] = base_types::convertor<U2, T2>::convert(src.tiles[0][j].data[3]);
                     int col_idx = local_col_idx * 2 + j * 16;
-                    move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx,
-                                  tmp[0]);
-                    move<U2>::sts(dst_ptr[local_row_idx] +
-                                      sizeof(U) * (col_idx + 8),
-                                  tmp[1]);
+                    if (local_row_idx < GQA_RATIO) {
+                        move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * col_idx, tmp[0]);
+                        move<U2>::sts(dst_ptr[local_row_idx] + sizeof(U) * (col_idx + 8), tmp[1]);
+                    }
                 }
             }
         }
     }
+
     template <ducks::rt::row_layout RT>
     __device__ static inline void right_fill(
         RT &dst, const RT &src, const int col_idx,
@@ -242,36 +223,53 @@ template <typename config, typename globals> struct attention_partial {
             }
         }
     }
-    // This is super specific to loading Q in a single kittens::warp
-    // Mainly two things are different:
-    //   1. Ignores Q global dimensions
-    //   2. Only loads 4 rows of Q, not 16 (assumes GQA_RATIO == 4) --> only 32
-    //   calls needed, so single call per thread
+
+    // Load Q for GQA_RATIO heads x head_dim elements
     __device__ static inline void
     load_Q_async(q_st &dst, const globals::activations_t &src,
-                 const int q_head_start_idx /*0, 4, 8, ...*/) {
-        static_assert(LLAMA_1B_HEAD_DIM == 64 && GQA_RATIO == 4,
-                      "Fix this function.");
+                 const int q_head_start_idx) {
         using T = typename q_st::dtype;
-        constexpr int elem_per_memcpy =
-            sizeof(float4) / sizeof(typename q_st::dtype);                  // 8
-        constexpr int memcpy_per_row = LLAMA_1B_HEAD_DIM / elem_per_memcpy; // 8
+        constexpr int elem_per_memcpy = sizeof(float4) / sizeof(T);  // 8
+        constexpr int total_elements = GQA_RATIO * globals::head_dim;
+        constexpr int total_memcpys = (total_elements + elem_per_memcpy - 1) / elem_per_memcpy;
 
         typename globals::activations_t::dtype *src_ptr =
-            &src.raw_ptr[q_head_start_idx * LLAMA_1B_HEAD_DIM];
-        uint32_t dst_ptr = static_cast<uint32_t>(__cvta_generic_to_shared(
-            &dst.data[(q_head_start_idx % 16) * LLAMA_1B_HEAD_DIM]));
+            &src.raw_ptr[q_head_start_idx * globals::head_dim];
+        // Always load Q heads at rows 0..GQA_RATIO-1 to avoid
+        // overflowing the 16-row tile.
+        uint32_t dst_base = static_cast<uint32_t>(__cvta_generic_to_shared(
+            &dst.data[0]));
 
         int laneid = kittens::warp::laneid();
-        int row = laneid / memcpy_per_row;
-        int col = (laneid * elem_per_memcpy) % LLAMA_1B_HEAD_DIM;
 
-        // everything should fit!
-        asm volatile(
-            "cp.async.cg.shared.global.L2::128B [%0], [%1], 16;\n" ::"r"(
-                dst.idx(dst_ptr, {row, col})),
-            "l"(&src_ptr[row * LLAMA_1B_HEAD_DIM + col])
-            : "memory");
+        // Round 1: first 32 copies
+        if (laneid < total_memcpys) {
+            int flat_elem = laneid * elem_per_memcpy;
+            int row = flat_elem / globals::head_dim;
+            int col = flat_elem % globals::head_dim;
+
+            asm volatile(
+                "cp.async.cg.shared.global.L2::128B [%0], [%1], 16;\n"
+                ::"r"(dst.idx(dst_base, {row, col})),
+                "l"(&src_ptr[row * globals::head_dim + col])
+                : "memory");
+        }
+
+        // Round 2: remaining copies (elements 256+)
+        constexpr int second_round_start = 32;
+        if (laneid + second_round_start < total_memcpys) {
+            int copy_idx = laneid + second_round_start;
+            int flat_elem = copy_idx * elem_per_memcpy;
+            int row = flat_elem / globals::head_dim;
+            int col = flat_elem % globals::head_dim;
+
+            asm volatile(
+                "cp.async.cg.shared.global.L2::128B [%0], [%1], 16;\n"
+                ::"r"(dst.idx(dst_base, {row, col})),
+                "l"(&src_ptr[row * globals::head_dim + col])
+                : "memory");
+        }
+
         asm volatile("cp.async.commit_group;\n" ::: "memory");
     }
 
@@ -311,19 +309,20 @@ template <typename config, typename globals> struct attention_partial {
                                            parsed_instruction &inst) {
             s.record(megakernel::TEVENT_AT_GMEM_WAIT);
 
-            // Wait for the previous ops to finish (16 dims each, so 4 ops on
-            // the same head)
+            // head_dim / matvec_block_size = blocks per head
+            // Wait for K head blocks
             while (*(volatile int *)&g.Bar[{
                        inst.layer_idx, OPCODE_RMS_QKV_MatVecRopeAppend - 1,
-                       LLAMA_1B_NUM_ATTENTION_HEADS + inst.kv_head_idx}] < 4) {
+                       globals::num_attention_heads + inst.kv_head_idx}] < globals::head_dim / globals::matvec_block_size) {
                 __nanosleep(config::GMEM_SPIN_LOOP_SLEEP_NANOS);
             }
 
+            // Wait for V head blocks
             while (
                 *(volatile int *)&g
                      .Bar[{inst.layer_idx, OPCODE_RMS_QKV_MatVecRopeAppend - 1,
-                           LLAMA_1B_NUM_ATTENTION_HEADS +
-                               LLAMA_1B_NUM_KV_HEADS + inst.kv_head_idx}] < 4) {
+                           globals::num_attention_heads +
+                               globals::num_kv_heads + inst.kv_head_idx}] < globals::head_dim / globals::matvec_block_size) {
                 __nanosleep(config::GMEM_SPIN_LOOP_SLEEP_NANOS);
             }
 
@@ -337,11 +336,10 @@ template <typename config, typename globals> struct attention_partial {
                 arrive(s.tensor_finished, config::NUM_CONSUMER_WARPS);
 #endif
 
-                // Setup
                 parsed_instruction inst{s};
                 int seq_len = g.pos_id + 1;
-                int total_attn_blocks = (seq_len + LLAMA_1B_KV_BLOCK_SIZE - 1) /
-                                        LLAMA_1B_KV_BLOCK_SIZE;
+                int total_attn_blocks = (seq_len + globals::kv_block_size - 1) /
+                                        globals::kv_block_size;
                 int blocks_per_partial =
                     (total_attn_blocks + inst.num_partials - 1) /
                     inst.num_partials;
@@ -355,7 +353,7 @@ template <typename config, typename globals> struct attention_partial {
                 if (start_blk_idx >= end_blk_idx)
                     finish_KV_page(s);
 
-                // Run the pipeline!
+                // Run the pipeline
                 for (int i = 0; i + start_blk_idx < end_blk_idx; ++i) {
                     auto cur_blk_idx = start_blk_idx + i;
                     int stage = cur_blk_idx % NUM_STAGES;
@@ -390,18 +388,19 @@ template <typename config, typename globals> struct attention_partial {
         static __device__ void run(const globals &g, megakernel::state<config> &s) {
 
             if (kittens::warpid() == 0) {
-                // Wait for the previous ops to finish1
                 parsed_instruction inst{s};
                 int q_head_start_idx = inst.kv_head_idx * GQA_RATIO;
 
+                // Wait for Q heads to be ready
                 if (kittens::laneid() == 0) {
+                    // head_dim / matvec_block_size = blocks per head
                     for (int head_offset = 0; head_offset < GQA_RATIO;
                          head_offset++) {
                         while (*(volatile int *)&g
                                     .Bar[{inst.layer_idx,
                                           OPCODE_RMS_QKV_MatVecRopeAppend - 1,
                                           q_head_start_idx + head_offset}] <
-                               4) {
+                               globals::head_dim / globals::matvec_block_size) {
                             __nanosleep(config::GMEM_SPIN_LOOP_SLEEP_NANOS);
                         }
                     }
@@ -409,11 +408,11 @@ template <typename config, typename globals> struct attention_partial {
                 kittens::warp::sync();
 
                 // Setup
-                int q_head_local_idx =
-                    (q_head_start_idx % q_rt::tile_size_row) / 4;
+                // Q is always loaded at rows 0..GQA_RATIO-1 of the tile.
+                int q_head_local_idx = 0;
                 int seq_len = g.pos_id + 1;
-                int total_attn_blocks = (seq_len + LLAMA_1B_KV_BLOCK_SIZE - 1) /
-                                        LLAMA_1B_KV_BLOCK_SIZE;
+                int total_attn_blocks = (seq_len + globals::kv_block_size - 1) /
+                                        globals::kv_block_size;
                 int blocks_per_partial =
                     (total_attn_blocks + inst.num_partials - 1) /
                     inst.num_partials;
@@ -435,39 +434,26 @@ template <typename config, typename globals> struct attention_partial {
                 max_vec_rv diff_scaled_max_vec_reg;
                 norm_vec_rv norm_vec_reg;
                 kittens::warp::neg_infty(max_vec_reg);
-                kittens::warp::zero(last_scaled_max_vec_reg); // just not +-inf
+                kittens::warp::zero(last_scaled_max_vec_reg);
                 kittens::warp::zero(norm_vec_reg);
                 kittens::warp::zero(O_reg);
-                o_sv(&O_smem)[4] = get_O_smem(s);
+                o_sv(&O_smem)[GQA_RATIO] = get_O_smem(s);
                 l_sv &L_smem = get_L_smem(s);
 
-                // Initiate the load on Q
+                // Load Q
                 wait_QOL_page(s);
-
                 q_st &Q_smem = get_Q_smem(s);
-
                 load_Q_async(Q_smem, g.q_post_rope, q_head_start_idx);
-
-                // Wait for Q to arrive
                 kittens::warp::load_async_wait();
-
                 kittens::warp::load(Q_reg, Q_smem);
 
-                // kittens::sv_bf<256> &true_qsmem = *reinterpret_cast<kittens::sv_bf<256>
-                // *>(&Q_smem);
-
-                // kittens::warp::load(true_qsmem, g.q_post_rope, {inst.kv_head_idx});
-                // kittens::warp::sync();
-                // kittens::warp::load(Q_reg, Q_smem);
-                // kittens::warp::sync();
-
-                // Run the pipeline!
+                // Run the pipeline
                 for (int i = 0; i + start_blk_idx < end_blk_idx; ++i) {
                     int stage = (start_blk_idx + i) % NUM_STAGES;
                     kv_st &K_smem = get_K_smem(s, stage);
                     kv_st &V_smem = get_V_smem(s, stage);
 
-                    // Perform Q @ K.T
+                    // Q @ K.T
                     kittens::warp::zero(attn_fl_reg);
                     kittens::warp::wait(K_arrived(s, stage), (i / NUM_STAGES) % 2);
 
@@ -476,48 +462,42 @@ template <typename config, typename globals> struct attention_partial {
                     kittens::warp::sync();
                     kittens::warp::arrive(K_finished(s, stage));
 
-                    // Mask out invalid positions at the end
-                    if ((i + start_blk_idx + 1) * LLAMA_1B_KV_BLOCK_SIZE >
-                        seq_len)
+                    // Mask out invalid positions
+                    if ((i + start_blk_idx + 1) * globals::kv_block_size > seq_len)
                         right_fill(attn_fl_reg, attn_fl_reg,
-                                   seq_len % LLAMA_1B_KV_BLOCK_SIZE,
+                                   seq_len % globals::kv_block_size,
                                    -999999999999.f);
 
-                    // Obtain maximums per row (which is per head)
-                    kittens::warp::row_max(max_vec_reg, attn_fl_reg,
-                                  max_vec_reg); // includes previous max
+                    // Row max
+                    kittens::warp::row_max(max_vec_reg, attn_fl_reg, max_vec_reg);
 
-                    // Scale attention block and maximums by sqrt(D_h)
+                    // Scale
                     kittens::warp::mul(attn_fl_reg, attn_fl_reg, softmax_temp);
                     kittens::warp::mul(scaled_max_vec_reg, max_vec_reg, softmax_temp);
 
-                    // Calculate sofkittens::tmax numerator
+                    // Softmax numerator
                     kittens::warp::sub_row(attn_fl_reg, attn_fl_reg, scaled_max_vec_reg);
                     kittens::warp::exp2(attn_fl_reg, attn_fl_reg);
 
-                    // Calculate sofkittens::tmax denominator
+                    // Softmax denominator update
                     kittens::warp::sub(diff_scaled_max_vec_reg, last_scaled_max_vec_reg,
                               scaled_max_vec_reg);
-                    kittens::warp::exp2(diff_scaled_max_vec_reg,
-                               diff_scaled_max_vec_reg);
+                    kittens::warp::exp2(diff_scaled_max_vec_reg, diff_scaled_max_vec_reg);
 
-                    // Normalize and accumulate numerator (A @ V)
+                    // Accumulate A @ V
                     kittens::warp::mul_row(O_reg, O_reg, diff_scaled_max_vec_reg);
                     kittens::warp::wait(V_arrived(s, stage), (i / NUM_STAGES) % 2);
 
                     kittens::warp::load(V_reg, V_smem);
-                    kittens::warp::copy(attn_bf_reg,
-                               attn_fl_reg); // Convert to bf16 to do matmul
+                    kittens::warp::copy(attn_bf_reg, attn_fl_reg);
                     kittens::warp::mma_AB(O_reg, attn_bf_reg, V_reg, O_reg);
                     kittens::warp::sync();
                     kittens::warp::arrive(V_finished(s, stage));
 
-                    // Normalize and accumulate demoniator
-                    kittens::warp::mul(norm_vec_reg, norm_vec_reg,
-                              diff_scaled_max_vec_reg);
+                    // Denominator accumulate
+                    kittens::warp::mul(norm_vec_reg, norm_vec_reg, diff_scaled_max_vec_reg);
                     kittens::warp::row_sum(norm_vec_reg, attn_fl_reg, norm_vec_reg);
 
-                    // Save for next iteration
                     kittens::warp::copy(last_scaled_max_vec_reg, scaled_max_vec_reg);
                 }
 
@@ -528,17 +508,13 @@ template <typename config, typename globals> struct attention_partial {
                     finish_KV_page(s);
                     kittens::warp::div_row(O_reg, O_reg, norm_vec_reg);
                     kittens::warp::log2(L_reg, norm_vec_reg);
-                    kittens::warp::add(
-                        L_reg, L_reg,
-                        last_scaled_max_vec_reg); // now L_reg contains the LSE
+                    kittens::warp::add(L_reg, L_reg, last_scaled_max_vec_reg);
                 } else {
-                    // Very edgy case where no blocks are processed.
-                    // Make the math work out during attention reduction!
                     kittens::warp::neg_infty(L_reg);
                 }
 
-                // Store the results
-                store_4_rows(O_smem, O_reg, q_head_local_idx);
+                // Store: GQA_RATIO heads
+                store_gqa_rows(O_smem, O_reg, q_head_local_idx);
                 kittens::warp::sync();
 
                 kittens::warp::arrive(O_arrived(s));
@@ -572,10 +548,8 @@ template <typename config, typename globals> struct attention_partial {
             }
 
             if (kittens::laneid() == 0) {
-                for (int head_offset = 0; head_offset < GQA_RATIO;
-                     head_offset++) {
-                    auto &smem_bf =
-                        *reinterpret_cast<o_sv_bf *>(&O_smem[head_offset]);
+                for (int head_offset = 0; head_offset < GQA_RATIO; head_offset++) {
+                    auto &smem_bf = *reinterpret_cast<o_sv_bf *>(&O_smem[head_offset]);
                     kittens::tma::store_async<cache_policy::EVICT_LAST>(
                         g.attn_out, smem_bf, {q_head_start_idx + head_offset});
                 }
@@ -585,18 +559,15 @@ template <typename config, typename globals> struct attention_partial {
         static inline __device__ void
         store_o_no_skip(const globals &g, megakernel::state<config> &s,
                         int q_head_start_idx, parsed_instruction &inst) {
-            // Store partial attention output to global memory
             if (kittens::laneid() == 0) {
                 o_sv(&O_smem)[GQA_RATIO] = get_O_smem(s);
                 kittens::wait(O_arrived(s), 0);
                 s.record(megakernel::TEVENT_OUTPUT_READY);
 
-                for (int head_offset = 0; head_offset < GQA_RATIO;
-                     head_offset++) {
+                for (int head_offset = 0; head_offset < GQA_RATIO; head_offset++) {
                     kittens::tma::store_async<cache_policy::EVICT_LAST>(
                         g.attn_out_intermediates, O_smem[head_offset],
-                        {0, q_head_start_idx + head_offset, inst.partial_idx,
-                         0});
+                        {0, q_head_start_idx + head_offset, inst.partial_idx, 0});
                 }
             }
         }
@@ -604,9 +575,9 @@ template <typename config, typename globals> struct attention_partial {
         static __device__ void run(const globals &g, megakernel::state<config> &s) {
             parsed_instruction inst{s};
             int laneid = kittens::warp::laneid();
-            int q_head_start_idx =
-                inst.kv_head_idx * GQA_RATIO; // 0, 4, 8, 12, 16, 20, 24, 28
-            int q_head_vec_start_idx = q_head_start_idx % 16;
+            int q_head_start_idx = inst.kv_head_idx * GQA_RATIO;
+            // Q is always loaded at rows 0..GQA_RATIO-1.
+            int q_head_vec_start_idx = 0;
 
             auto skip_attn_reduction = g.skip_attn_reduction;
 
@@ -616,14 +587,11 @@ template <typename config, typename globals> struct attention_partial {
                 store_o_no_skip(g, s, q_head_start_idx, inst);
             }
 
-            // Store LSE to global memory
+            // Store LSE
             if (laneid < GQA_RATIO && !skip_attn_reduction) {
                 l_sv &L_smem = get_L_smem(s);
                 kittens::wait(L_arrived(s), 0);
 
-                // Can't do anything fancy with writing 4 spread-out values.
-                // We can do this in the consumer if we want to (without using
-                // smem)
                 float tmp;
                 uint32_t src_ptr =
                     static_cast<uint32_t>(__cvta_generic_to_shared(
@@ -640,7 +608,7 @@ template <typename config, typename globals> struct attention_partial {
                              :
                              : "l"(dst_ptr), "f"(tmp));
             }
-            kittens::warp::sync(); // ensure all writes are committed
+            kittens::warp::sync();
             asm volatile("fence.acq_rel.gpu;");
 
             kittens::tma::store_async_wait();
@@ -649,7 +617,6 @@ template <typename config, typename globals> struct attention_partial {
                 finish_QOL_page(s);
             }
 
-            // Increment flag for KV head to indicate partial attention is complete
             if (laneid == 0) {
                 s.record(megakernel::TEVENT_AT_GMEM_STORE);
 

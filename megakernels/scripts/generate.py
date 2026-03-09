@@ -33,7 +33,7 @@ class ScriptConfig(pydra.Config):
     ntok: int = 100
     mode: str = "model"
     interleave_rope: bool = True
-    mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
+    mk_dir: Path = Path(__file__).parent.parent.parent / "build"
     token_details: bool = False
     tokens: bool = True
     num_warmup: int = 5
@@ -79,6 +79,11 @@ class ScriptConfig(pydra.Config):
 
     def l8(self):
         self.model = "meta-llama/Llama-3.1-8B-Instruct"
+
+    def l3(self):
+        self.model = "meta-llama/Llama-3.2-3B-Instruct"
+        self.setting = "latency_3b"
+        self.mk_dir = Path(__file__).parent.parent.parent / "build"
 
 
 @torch.inference_mode()
@@ -190,17 +195,17 @@ def main(config: ScriptConfig):
         print("Output ids: ", to_cpu)
         print("Output text: ", tokenizer.batch_decode(to_cpu))
 
-    if config.token_details:
-        ids_list = to_cpu.tolist()
-        tokens = tokenizer.convert_ids_to_tokens(ids_list)
+        if config.token_details:
+            ids_list = to_cpu.tolist()
+            tokens = tokenizer.convert_ids_to_tokens(ids_list)
 
-        table = []
-        for i, token in enumerate(tokens):
-            pos_id = i + prompt_len
-            table.append([i, pos_id, token])
+            table = []
+            for i, token in enumerate(tokens):
+                pos_id = i + prompt_len
+                table.append([i, pos_id, token])
 
-        print("More detailed output:")
-        print(tabulate(table, headers=["output id", "position id", "token"]))
+            print("More detailed output:")
+            print(tabulate(table, headers=["output id", "position id", "token"]))
 
     fwd_per_second = (config.ntok - 1) / elapsed
     print(f"Fwd per second: {fwd_per_second:.2f}")

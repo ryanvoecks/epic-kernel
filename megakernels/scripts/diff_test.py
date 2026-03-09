@@ -21,7 +21,7 @@ from megakernels.scheduler import (
 
 
 class ScriptConfig(pydra.Config):
-    mk_dir: Path = Path(__file__).parent.parent.parent / "demos" / "low-latency-llama"
+    mk_dir: Path = Path(__file__).parent.parent.parent / "build"
     model: str = "meta-llama/Llama-3.2-1B-Instruct"
     device: str | None = None
     prompt_len: int = 10

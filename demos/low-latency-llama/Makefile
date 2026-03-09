@@ -1,7 +1,5 @@
 # Config
 NVCC ?= nvcc
-TARGET ?= mk_llama
-SRC ?= llama.cu
 CONFIG ?= Release
 
 # Get Python headers and version
@@ -22,12 +20,17 @@ ifeq ($(CONFIG), Debug)
     NVCC_FLAGS += -DTIMING_RECORD_ENABLED
 endif
 
-# Default target
-all: $(TARGET)
+# Default to 1B model
+all: mk_llama
 
-$(TARGET): $(SRC)
-	$(NVCC) $(SRC) $(NVCC_FLAGS) -o $(TARGET)$(EXT_SUFFIX)
+mk_llama: llama.cu
+	mkdir -p $(BUILD_DIR)
+	$(NVCC) llama.cu $(NVCC_FLAGS) -o $(BUILD_DIR)/mk_llama$(EXT_SUFFIX)
+
+mk_llama_3b: llama.cu
+	mkdir -p $(BUILD_DIR)
+	$(NVCC) llama.cu $(NVCC_FLAGS) -DLLAMA_3B -o $(BUILD_DIR)/mk_llama_3b$(EXT_SUFFIX)
 
 # Clean target
 clean:
-	rm -f $(TARGET)$(EXT_SUFFIX)
+	rm -f $(BUILD_DIR)/mk_llama$(EXT_SUFFIX) $(BUILD_DIR)/mk_llama_3b$(EXT_SUFFIX)

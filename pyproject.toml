@@ -26,3 +26,8 @@ dependencies = [
 
 [tool.setuptools]
 packages = {find = {}}
+
+[tool.pyright]
+reportArgumentType = "none"
+reportAttributeAccessIssue = "none"
+reportOptionalMemberAccess = "none"

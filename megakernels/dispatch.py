@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from megakernels.demos.latency.mk import LatencyMK_Interpreter
+from megakernels.demos.latency.mk import Latency3B_MK_Interpreter, LatencyMK_Interpreter
 from megakernels.demos.latency.python_vm import (
     INSTRUCTION_TO_SOLVER as LATENCY_INSTRUCTION_TO_SOLVER,
 )
@@ -16,16 +16,19 @@ from megakernels.scheduler import ScheduleBuilder
 
 BUILDER_MAP = {
     "latency": LatencyScheduleBuilder,
+    "latency_3b": LatencyScheduleBuilder,
     "throughput": ThroughputScheduleBuilder,
 }
 
 MK_INTERPRETER_MAP = {
     "latency": LatencyMK_Interpreter,
+    "latency_3b": Latency3B_MK_Interpreter,
     "throughput": ThroughputMK_Interpreter,
 }
 
 INSTRUCTION_TO_SOLVER_MAP = {
     "latency": LATENCY_INSTRUCTION_TO_SOLVER,
+    "latency_3b": LATENCY_INSTRUCTION_TO_SOLVER,
     "throughput": THROUGHPUT_INSTRUCTION_TO_SOLVER,
 }
 

@@ -4,7 +4,6 @@ on:
   pull_request:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   ci:
@@ -12,11 +11,6 @@ jobs:
     defaults:
       run:
         shell: bash -el {0}
-    env:
-      THUNDERKITTENS_ROOT: ${{ github.workspace }}/ThunderKittens
-      MEGAKERNELS_ROOT: ${{ github.workspace }}
-      PYTHON_VERSION: "3.12"
-      GPU: B200
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,16 +22,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv python install 3.12
           uv sync
-          uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
       - name: Build CUDA megakernel
         run: |
-          cd demos/low-latency-llama
-          uv run make PYTHON=python
+          make mk_llama mk_llama_3b
 
       - name: Run regression sweep
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-        run: uv run python megakernels/scripts/regression.py wandb_project=megakernels-ci
+        run: uv run megakernels/scripts/regression.py wandb_project=megakernels-ci

@@ -80,8 +80,25 @@ def matvec_with_residual(
         residual[start:end] += matvec_out.to(residual.dtype)
 
 
+def _blocks_per_head(globs: Globals) -> int:
+    return globs.head_dim // globs.qkv_block_size
+
+
+def _expected_downproj_barrier(globs: Globals) -> int:
+    num_col_splits = globs.intermediate_size // globs.matvec_reduction_size
+    num_down_blocks = globs.hidden_size // globs.down_proj_block_size
+    return num_col_splits * num_down_blocks
+
+
+def _expected_upgate_barrier(globs: Globals) -> int:
+    return globs.intermediate_size // globs.up_gate_proj_block_size
+
+
+def _expected_oproj_barrier(globs: Globals) -> int:
+    return globs.hidden_size // globs.o_proj_block_size
+
+
 def o_proj_residual(globals: Globals, instruction: O_ProjResidual):
-    # Barrier check
     op_barriers = globals.barriers[instruction.layer_idx, instruction.prev_opcode() - 1]
     assert op_barriers[0] == globals.num_attention_heads
 
@@ -99,15 +116,13 @@ def o_proj_residual(globals: Globals, instruction: O_ProjResidual):
         reduction_block_idx=instruction.reduction_block_idx,
     )
 
-    # Barrier update
     next_op_barriers = globals.barriers[instruction.layer_idx, instruction.opcode() - 1]
     next_op_barriers[0] += instruction.end_block_idx - instruction.start_block_idx
 
 
 def down_proj_residual(globals: Globals, instruction: DownProjResidual):
-    # Barrier check
     op_barriers = globals.barriers[instruction.layer_idx, instruction.prev_opcode() - 1]
-    assert op_barriers[0] == 512  # 8192 / 16
+    assert op_barriers[0] == _expected_upgate_barrier(globals)
 
     matvec_with_residual(
         mat=globals.down_proj_weights[instruction.layer_idx],
@@ -127,9 +142,8 @@ def down_proj_residual(globals: Globals, instruction: DownProjResidual):
 def layer_norm_double_matvec_silu(
     globals: Globals, instruction: LayerNormDoubleMatVecSiLU
 ):
-    # Barrier check
     op_barriers = globals.barriers[instruction.layer_idx, instruction.prev_opcode() - 1]
-    assert op_barriers[0] == 128
+    assert op_barriers[0] == _expected_oproj_barrier(globals)
 
     post_ln = rms_norm(
         inp=globals.hidden_states,
@@ -170,10 +184,9 @@ def layer_norm_matvec_rope_append(
 ):
     layer_idx = instruction.layer_idx
 
-    # Barrier check
     if layer_idx > 0:
         op_barriers = globals.barriers[layer_idx - 1, instruction.prev_opcode() - 1]
-        assert op_barriers[0] == 512
+        assert op_barriers[0] == _expected_downproj_barrier(globals)
 
     post_ln = rms_norm(
         inp=globals.hidden_states,
@@ -187,6 +200,7 @@ def layer_norm_matvec_rope_append(
     v_start = k_start + globals.num_kv_heads * globals.head_dim
 
     barriers = globals.barriers[instruction.layer_idx, instruction.opcode() - 1]
+    bph = _blocks_per_head(globals)
 
     for block_idx in range(
         instruction.start_output_block_idx, instruction.end_output_block_idx
@@ -245,14 +259,14 @@ def layer_norm_matvec_rope_append(
                     out
                 )
 
-        barriers[block_idx // 4] += 1
+        barriers[block_idx // bph] += 1
 
 
 def rms_lm_head(globals: Globals, instruction: RMS_LM_Head):
     op_barriers = globals.barriers[
         globals.num_hidden_layers - 1, instruction.prev_opcode() - 1
     ]
-    assert op_barriers[0] == 512
+    assert op_barriers[0] == _expected_downproj_barrier(globals)
 
     post_ln = rms_norm(
         inp=globals.hidden_states,
@@ -276,17 +290,17 @@ def rms_lm_head(globals: Globals, instruction: RMS_LM_Head):
 
 def partial_attention(globals: Globals, instruction: PartialAttention):
     gqa_ratio = globals.num_attention_heads // globals.num_kv_heads
+    bph = _blocks_per_head(globals)
 
-    # Barrier check
     op_barriers = globals.barriers[instruction.layer_idx, instruction.prev_opcode() - 1]
     for i in range(gqa_ratio):
-        assert op_barriers[instruction.kv_head_idx * gqa_ratio + i] == 4
-    assert op_barriers[globals.num_attention_heads + instruction.kv_head_idx] == 4
+        assert op_barriers[instruction.kv_head_idx * gqa_ratio + i] == bph
+    assert op_barriers[globals.num_attention_heads + instruction.kv_head_idx] == bph
     assert (
         op_barriers[
             globals.num_attention_heads + globals.num_kv_heads + instruction.kv_head_idx
         ]
-        == 4
+        == bph
     )
 
     kv_block_size = globals.attn_kv_block_size
@@ -316,10 +330,8 @@ def partial_attention(globals: Globals, instruction: PartialAttention):
     qk = einsum(q.float(), k.float(), "h i, k i -> h k")
     scaled_qk = qk * globals.attn_scale
 
-    # casting the output of the softmax to 16-bit causes small numerical differences
     softmax = torch.softmax(scaled_qk, dim=-1)
 
-    # lse = torch.logsumexp(scaled_qk, dim=-1)
     lse = torch.log2(torch.sum(torch.exp(scaled_qk), dim=-1))
 
     out = einsum(softmax.float(), v.float(), "h k, k o -> h o")
@@ -341,7 +353,6 @@ def partial_attention(globals: Globals, instruction: PartialAttention):
             out
         )
 
-        # Barrier update
         barriers = globals.barriers[instruction.layer_idx, instruction.opcode() - 1]
         barriers[head_start:head_end] += 1
 
@@ -349,7 +360,6 @@ def partial_attention(globals: Globals, instruction: PartialAttention):
 def attention_reduction(globals: Globals, instruction: AttentionReduction):
     head_start_idx = instruction.head_start_idx
 
-    # Barrier check
     op_barriers = globals.barriers[instruction.layer_idx, instruction.prev_opcode() - 1]
     assert op_barriers[head_start_idx] == instruction.num_partials
 
@@ -368,7 +378,6 @@ def attention_reduction(globals: Globals, instruction: AttentionReduction):
 
     max_lse = torch.max(lses, dim=-1, keepdim=True).values
 
-    # adjusted_factors = (lses - max_lse).exp()
     adjusted_factors = (lses - max_lse).exp2()
     new_denominator = adjusted_factors.sum(dim=-1, keepdim=True)
 
@@ -388,9 +397,8 @@ def attention_reduction(globals: Globals, instruction: AttentionReduction):
             head_start_idx : head_start_idx + globals.attn_reduction_size, output_slot
         ] = reduced
 
-    # Barrier update
     next_op_barriers = globals.barriers[instruction.layer_idx, instruction.opcode() - 1]
-    next_op_barriers[0] += globals.attn_reduction_size  # the dumb way
+    next_op_barriers[0] += globals.attn_reduction_size
 
 
 INSTRUCTION_TO_SOLVER = {
