@@ -17,6 +17,22 @@ repos:
     - id: check-merge-conflict
     - id: detect-private-key
 
+  # Check for non-ASCII
+  - repo: local
+    hooks:
+      - id: forbid-non-ascii
+        name: Forbid non-ASCII characters
+        entry: '[^\x00-\x7F]'
+        language: pygrep
+        types: [text]
+
+  # C/C++
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.8
+    hooks:
+      - id: clang-format
+        types_or: [c, c++, cuda]
+
   # Python
   - repo: local
     hooks:
@@ -35,12 +51,3 @@ repos:
       entry: uvx ruff format
       language: system
       types: [python]
-
-  # Check for non-ASCII
-  - repo: local
-    hooks:
-      - id: forbid-non-ascii
-        name: Forbid non-ASCII characters
-        entry: '[^\x00-\x7F]'
-        language: pygrep
-        types: [text]
