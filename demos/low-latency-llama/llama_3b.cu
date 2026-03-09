@@ -23,12 +23,13 @@ using rms_upgate_silu_op = rms_upgate_silu<default_config, llama_3b_globals>;
 using downproj_op = downproj<default_config, llama_3b_globals>;
 using rms_lm_head_op = rms_lm_head<default_config, llama_3b_globals>;
 
-PYBIND11_MODULE(mk_llama_3b, m) {
+PYBIND11_MODULE(mk_llama_3b, m)
+{
     m.doc() = "";
     kittens::py::bind_kernel<
         mk<default_config, llama_3b_globals, attention_partial_op,
-            attention_reduction_op, rms_qkv_rope_append_op, downproj_op,
-            o_proj_op, rms_upgate_silu_op, rms_lm_head_op>>(
+           attention_reduction_op, rms_qkv_rope_append_op, downproj_op,
+           o_proj_op, rms_upgate_silu_op, rms_lm_head_op>>(
         m, "mk_llama_3b", &llama_3b_globals::Bar,
         &llama_3b_globals::instructions, &llama_3b_globals::timings,
 

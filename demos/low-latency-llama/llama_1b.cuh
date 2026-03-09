@@ -48,7 +48,8 @@ using config = megakernel::default_config;
 template <int _num_layers, int _hidden_dim, int _intermediate_dim,
           int _head_dim, int _num_attention_heads, int _num_kv_heads,
           int _kv_block_size, int _matvec_block_size, int _sm_count>
-struct globals_t {
+struct globals_t
+{
 
     constexpr static int num_layers = _num_layers;
     constexpr static int matvec_block_size = _matvec_block_size;
@@ -68,29 +69,29 @@ struct globals_t {
 
     using weights_t =
         kittens::gl<kittens::bf16, 1, -1, -1, hidden_dim,
-           kittens::st_bf<matvec_block_size, 512>>; // assumed to be N by 2048 (X@W.T).
+                    kittens::st_bf<matvec_block_size, 512>>; // assumed to be N by 2048 (X@W.T).
     using weights_big_indim_t =
         kittens::gl<kittens::bf16, 1, -1, -1, intermediate_dim,
-           kittens::st_bf<matvec_block_size, 512>>; // assumed to be N by 2048 (X@W.T).
+                    kittens::st_bf<matvec_block_size, 512>>; // assumed to be N by 2048 (X@W.T).
 
     using activations_t = kittens::gl<kittens::bf16, 1, 1, 1, hidden_dim, kittens::sv_bf<hidden_dim>,
-                             kittens::sv_bf<head_dim>, kittens::sv_bf<matvec_block_size>>;
+                                      kittens::sv_bf<head_dim>, kittens::sv_bf<matvec_block_size>>;
     using activations_big_indim_t =
         kittens::gl<kittens::bf16, 1, 1, 1, intermediate_dim, kittens::sv_bf<intermediate_dim>,
-           kittens::sv_bf<hidden_dim>, kittens::sv_bf<matvec_block_size>>;
+                    kittens::sv_bf<hidden_dim>, kittens::sv_bf<matvec_block_size>>;
     using logits_t = kittens::gl<kittens::bf16, 1, 1, 1, -1, kittens::sv_bf<matvec_block_size>>;
 
     using norm_weights_t = kittens::gl<kittens::bf16, 1, 1, -1, hidden_dim, kittens::sv_bf<hidden_dim>,
-                              kittens::sv_bf<matvec_block_size>>;
+                                       kittens::sv_bf<matvec_block_size>>;
     using rope_table_t = kittens::gl<float, 1, 1, -1, head_dim, kittens::sv_fl<head_dim>>;
     using kv_cache_t = kittens::gl<kittens::bf16, -1, -1, -1, head_dim, kittens::sv_bf<matvec_block_size>,
-                          kittens::tma::descriptor<kittens::st_bf<kv_block_size, head_dim>, 1>>;
+                                   kittens::tma::descriptor<kittens::st_bf<kv_block_size, head_dim>, 1>>;
 
     // max attention partials == sm_count
     using attn_out_intermediates_t =
         kittens::gl<float, 1, num_attention_heads, -1, head_dim, kittens::sv_fl<head_dim>>;
     using attn_lse_intermediates_t = kittens::gl<float, 1, 1, num_attention_heads, -1,
-                                        kittens::sv_fl<((sm_count + 15) / 16) * 16>>;
+                                                 kittens::sv_fl<((sm_count + 15) / 16) * 16>>;
 
     // num_layers by 6 ops per layer by up to 48 heads (Q + K + V)
     using barriers =
@@ -142,7 +143,8 @@ typedef globals_t<LLAMA_1B_NUM_LAYERS, LLAMA_1B_HIDDEN_DIM,
                   LLAMA_1B_INTERMEDIATE_DIM, LLAMA_1B_HEAD_DIM,
                   LLAMA_1B_NUM_ATTENTION_HEADS, LLAMA_1B_NUM_KV_HEADS,
                   LLAMA_1B_KV_BLOCK_SIZE, LLAMA_1B_MATVEC_BLOCK_SIZE,
-                  B200_SM_COUNT> llama_1b_globals;
+                  B200_SM_COUNT>
+    llama_1b_globals;
 
 template <typename config = config, typename globals = llama_1b_globals>
 struct attention_partial;

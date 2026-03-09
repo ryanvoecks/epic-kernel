@@ -22,9 +22,7 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
-        run: |
-          uv python install 3.12
-          uv sync
+        run: uv sync
 
       - name: Install pre-commit hooks
         run: uv run pre-commit install-hooks
