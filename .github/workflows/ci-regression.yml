@@ -31,4 +31,4 @@ jobs:
       - name: Run regression sweep
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-        run: uv run megakernels/scripts/regression.py wandb_project=megakernels-ci
+        run: uv run megakernels/scripts/regression.py wandb_project=megakernels-ci wandb_enabled=True
