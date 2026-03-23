@@ -251,7 +251,7 @@ def solve_router(globs: MixtralGlobals, ins: MoE_Router):
     globs.selected_expert_scores.copy_(top_scores.to(globs.selected_expert_scores.dtype))
 
     # Save normed hidden for reuse by all ExpertUpGateSiLU instructions
-    globs._router_normed = normed
+    globs.router_normed_hidden = normed
 
     # Signal that router is complete
     globs.barriers[ins.layer_idx, ins.opcode() - 1][0] = 1
@@ -275,8 +275,8 @@ def solve_expert_upgate(globs: MixtralGlobals, ins: ExpertUpGateSiLU):
         globs.barriers[ins.layer_idx, ins.opcode() - 1][ins.expert_idx] += ins.num_blocks
         return
 
-    assert globs._router_normed is not None
-    normed = globs._router_normed
+    assert globs.router_normed_hidden is not None
+    normed = globs.router_normed_hidden
 
     block_size = globs.expert_proj_block_size
     for block_idx in ins.block_indices():

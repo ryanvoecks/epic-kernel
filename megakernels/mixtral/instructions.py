@@ -30,6 +30,7 @@ class MixtralGlobals(BaseGlobals):
 
     # MoE activations
     expert_silu_out: Tensor          # [num_experts, intermediate_size]
+    router_normed_hidden: Tensor     # [hidden_size] — RMS-normed hidden, written by router, read by experts
     logits: Tensor                   # [vocab_size]
 
     # Router runtime outputs (written by MoE_Router, read by ExpertUp/Down)
@@ -62,9 +63,6 @@ class MixtralGlobals(BaseGlobals):
 
     def __post_init__(self):
         super().__post_init__()
-        # Scratch: normed hidden state produced by MoE_Router, consumed by ExpertUpGateSiLU.
-        # Not a dataclass field — set dynamically during forward pass.
-        self._router_normed: Tensor | None = None
 
     def num_total_heads(self) -> int:
         return self.num_attention_heads + self.num_kv_heads * 2

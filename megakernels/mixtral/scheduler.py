@@ -119,6 +119,7 @@ def make_globals(
         ),
         # MoE activation buffers
         expert_silu_out=buf([num_experts, config.intermediate_size]),
+        router_normed_hidden=buf(config.hidden_size),
         logits=buf(config.vocab_size),
         selected_expert_indices=torch.zeros(
             config.num_experts_per_tok, dtype=torch.int32, device=device
@@ -155,12 +156,12 @@ def make_globals(
 def schedule_qkv(globs: MixtralGlobals, layer_idx: int) -> list[Mixtral_QKV]:
     qkv_outdim = (globs.num_attention_heads + 2 * globs.num_kv_heads) * globs.head_dim
     num_qkv_blocks = assert_div(qkv_outdim, globs.qkv_block_size)
-    sm_count = globs.sm_count()
-    blocks_per_sm = num_qkv_blocks / sm_count
-    assert blocks_per_sm >= 1, f"Not enough QKV blocks ({num_qkv_blocks}) for {sm_count} SMs"
+    # Cap effective SMs to block count so every instruction covers ≥ 1 block.
+    effective_sms = min(globs.sm_count(), num_qkv_blocks)
+    blocks_per_sm = num_qkv_blocks / effective_sms
 
     instructions = []
-    for sm_idx in range(sm_count):
+    for sm_idx in range(effective_sms):
         start = round(sm_idx * blocks_per_sm)
         end = round((sm_idx + 1) * blocks_per_sm)
         instructions.append(
@@ -175,15 +176,14 @@ def schedule_expert_upgate(globs: MixtralGlobals, layer_idx: int) -> list[Expert
     sm_count = globs.sm_count()
     num_experts = globs.num_experts
 
-    # Distribute blocks across SMs, cycling through experts
-    instructions = []
-    # Each expert independently gets sm_count // num_experts SMs (roughly)
-    # Simpler: assign blocks round-robin, grouping contiguous blocks per SM per expert
-    blocks_per_sm = num_up_blocks / sm_count
-    assert blocks_per_sm >= 1, f"Not enough UpGate blocks ({num_up_blocks}) for {sm_count} SMs"
+    # Distribute blocks across SMs, cycling through experts.
+    # Cap effective SMs to block count so every instruction covers ≥ 1 block.
+    effective_sms = min(sm_count, num_up_blocks)
+    blocks_per_sm = num_up_blocks / effective_sms
 
+    instructions = []
     for expert_idx in range(num_experts):
-        for sm_idx in range(sm_count):
+        for sm_idx in range(effective_sms):
             start = round(sm_idx * blocks_per_sm)
             end = round((sm_idx + 1) * blocks_per_sm)
             if start >= end:
@@ -214,13 +214,14 @@ def schedule_expert_downproj(
             for down_block_idx in range(num_down_blocks):
                 jobs.append((expert_idx, col_idx, down_block_idx))
 
+    # Cap effective SMs to the number of jobs so every SM gets ≥ 1 job.
+    effective_sms = min(sm_count, len(jobs))
     instructions = []
     num_assigned = 0
-    for sm_idx in range(sm_count):
+    for sm_idx in range(effective_sms):
         jobs_left = len(jobs) - num_assigned
-        sms_left = sm_count - sm_idx
+        sms_left = effective_sms - sm_idx
         jobs_per_sm = jobs_left / sms_left
-        assert jobs_per_sm >= 1
 
         jobs_for_sm = round(jobs_per_sm)
         raw = jobs[num_assigned : num_assigned + jobs_for_sm]
@@ -251,11 +252,11 @@ def schedule_expert_downproj(
 def schedule_lm_head(globs: MixtralGlobals) -> list[Mixtral_RMS_LM_Head]:
     num_logit_blocks = assert_div(globs.vocab_size, globs.lm_head_block_size)
     sm_count = globs.sm_count()
-    blocks_per_sm = num_logit_blocks / sm_count
-    assert blocks_per_sm >= 1
+    effective_sms = min(sm_count, num_logit_blocks)
+    blocks_per_sm = num_logit_blocks / effective_sms
 
     instructions = []
-    for sm_idx in range(sm_count):
+    for sm_idx in range(effective_sms):
         start = round(sm_idx * blocks_per_sm)
         end = round((sm_idx + 1) * blocks_per_sm)
         instructions.append(
