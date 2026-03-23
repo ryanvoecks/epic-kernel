@@ -228,6 +228,7 @@ template <typename config, typename globals> struct attention_partial {
 
         typename globals::activations_t::dtype *src_ptr =
             &src.raw_ptr[q_head_start_idx * globals::head_dim];
+        // Keep Q rows at 0..GQA_RATIO-1; downstream row extraction depends on this.
         uint32_t dst_base = static_cast<uint32_t>(__cvta_generic_to_shared(
             &dst.data[0]));
 
@@ -389,6 +390,7 @@ template <typename config, typename globals> struct attention_partial {
                 }
                 kittens::warp::sync();
 
+                // Q is loaded at rows 0..GQA_RATIO-1.
                 int q_head_local_idx = 0;
                 int seq_len = g.pos_id + 1;
                 int total_attn_blocks = (seq_len + globals::kv_block_size - 1) /
@@ -433,7 +435,6 @@ template <typename config, typename globals> struct attention_partial {
 
                     kittens::warp::zero(attn_fl_reg);
                     kittens::warp::wait(K_arrived(s, stage), (i / NUM_STAGES) % 2);
-
                     kittens::warp::load(K_reg, K_smem);
                     kittens::warp::mma_ABt(attn_fl_reg, Q_reg, K_reg, attn_fl_reg);
                     kittens::warp::sync();
@@ -448,17 +449,15 @@ template <typename config, typename globals> struct attention_partial {
 
                     kittens::warp::mul(attn_fl_reg, attn_fl_reg, softmax_temp);
                     kittens::warp::mul(scaled_max_vec_reg, max_vec_reg, softmax_temp);
-
                     kittens::warp::sub_row(attn_fl_reg, attn_fl_reg, scaled_max_vec_reg);
                     kittens::warp::exp2(attn_fl_reg, attn_fl_reg);
 
                     kittens::warp::sub(diff_scaled_max_vec_reg, last_scaled_max_vec_reg,
-                              scaled_max_vec_reg);
+                                       scaled_max_vec_reg);
                     kittens::warp::exp2(diff_scaled_max_vec_reg, diff_scaled_max_vec_reg);
-
                     kittens::warp::mul_row(O_reg, O_reg, diff_scaled_max_vec_reg);
-                    kittens::warp::wait(V_arrived(s, stage), (i / NUM_STAGES) % 2);
 
+                    kittens::warp::wait(V_arrived(s, stage), (i / NUM_STAGES) % 2);
                     kittens::warp::load(V_reg, V_smem);
                     kittens::warp::copy(attn_bf_reg, attn_fl_reg);
                     kittens::warp::mma_AB(O_reg, attn_bf_reg, V_reg, O_reg);
@@ -467,7 +466,6 @@ template <typename config, typename globals> struct attention_partial {
 
                     kittens::warp::mul(norm_vec_reg, norm_vec_reg, diff_scaled_max_vec_reg);
                     kittens::warp::row_sum(norm_vec_reg, attn_fl_reg, norm_vec_reg);
-
                     kittens::warp::copy(last_scaled_max_vec_reg, scaled_max_vec_reg);
                 }
 
@@ -481,7 +479,6 @@ template <typename config, typename globals> struct attention_partial {
                 } else {
                     kittens::warp::neg_infty(L_reg);
                 }
-
                 store_gqa_rows(O_smem, O_reg, q_head_local_idx);
                 kittens::warp::sync();
 
@@ -544,6 +541,7 @@ template <typename config, typename globals> struct attention_partial {
             parsed_instruction inst{s};
             int laneid = kittens::warp::laneid();
             int q_head_start_idx = inst.kv_head_idx * GQA_RATIO;
+            // Q is loaded at rows 0..GQA_RATIO-1.
             int q_head_vec_start_idx = 0;
 
             auto skip_attn_reduction = g.skip_attn_reduction;

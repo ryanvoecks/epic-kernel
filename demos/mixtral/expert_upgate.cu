@@ -184,9 +184,9 @@ template <typename Config, typename Globals> struct expert_upgate {
                 &pipeline::get_activations(s))[kittens::warpid()];
 
             // Load this warp's chunk of router_normed_hidden
-            // coord element offset = warpid * REDUCTION_DIM_PER_WARP
+            // coord<>{} = default_type, no tile-size scaling; element offset = warpid * RDPW
             kittens::warp::load(activations_smem, g.router_normed_hidden,
-                                {kittens::warpid() * pipeline::REDUCTION_DIM_PER_WARP});
+                                kittens::coord<>{kittens::warpid() * pipeline::REDUCTION_DIM_PER_WARP});
             kittens::warp::sync();
 
             rv_t activations_vec;

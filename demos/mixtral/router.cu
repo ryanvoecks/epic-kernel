@@ -124,8 +124,9 @@ template <typename Config, typename Globals> struct moe_router {
                 s.pages[pid].ptr(sizeof(kittens::sv_bf<Globals::hidden_dim>)))[kittens::warpid()];
 
             // Load hidden_states chunk from GMEM into SMEM
+            // coord<>{} uses default_type (no tile-size scaling) so element offset = warpid*CHUNK
             kittens::warp::load(act_smem, g.hidden_states,
-                                {kittens::warpid() * CHUNK});
+                                kittens::coord<>{kittens::warpid() * CHUNK});
             kittens::warp::sync();
 
             // RMS norm across all warps
@@ -141,25 +142,21 @@ template <typename Config, typename Globals> struct moe_router {
                 sv_chunk &tmp_smem = act_smem;
                 kittens::warp::store(tmp_smem, act_vec);
                 kittens::warp::sync();
-                // coord<SV>{warpid()} → element offset = warpid * CHUNK
+                // coord<>{} uses default_type (no tile-size scaling)
                 kittens::warp::store(g.router_normed_hidden, tmp_smem,
-                                     {kittens::warpid() * CHUNK});
-                kittens::warp::sync();
+                                     kittens::coord<>{kittens::warpid() * CHUNK});
             }
 
-            // Release activation page now that normed values are written
+            // All-warp barrier: ensures every warp's GMEM write to router_normed_hidden
+            // is globally visible before warp 0 reads it for the dot-product loop.
+            // Uses barrier id=1 (rms_norm above uses id=0).
+            kittens::group<Config::NUM_CONSUMER_WARPS>::sync(1);
+
+            // Release activation page
             s.warp_finish_page(pid, 1);
 
             // Only warp 0 computes the 8 dot products
             if (kittens::warpid() != 0) return;
-
-            // Wait for all warps to finish writing router_normed_hidden
-            // (already synced above, but the GMEM writes need fence)
-            // Use a group sync — but we returned for warps != 0...
-            // Actually only warp 0 reaches here. The normed hidden was written
-            // by all warps above before the warp_finish_page.
-            // We need a memory fence to ensure GMEM writes are visible.
-            asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
 
             float logits[Globals::num_experts];
             int lane = kittens::laneid();
