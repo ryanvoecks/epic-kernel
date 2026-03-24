@@ -77,7 +77,7 @@ STAGE_BUFFERS = {
     "reduction":     ["attn_out"],
     "oproj":         ["hidden_states"],
     "router":        ["selected_expert_indices", "selected_expert_scores", "router_normed_hidden"],
-    "expert_upgate": ["expert_silu_out"],
+    "expert_upgate": ["hidden_states", "router_normed_hidden", "selected_expert_indices", "expert_silu_out"],
     "downproj":      ["hidden_states"],
     "full":          ["logits", "hidden_states"],
 }
@@ -211,6 +211,14 @@ def compare_tensor(py_val: Tensor, mk_val: Tensor, name: str) -> bool:
         flat_mk = mf.flatten()[:8].tolist()
         print(f"         py[0:8] = {[f'{v:.4f}' for v in flat_py]}")
         print(f"         mk[0:8] = {[f'{v:.4f}' for v in flat_mk]}")
+        # Show max-diff location
+        max_idx = adiff.flatten().argmax().item()
+        unraveled = list(divmod(max_idx, py_val.shape[-1]))
+        print(f"         max_adiff at flat={max_idx} -> {unraveled}: py={pf.flatten()[max_idx]:.4f}  mk={mf.flatten()[max_idx]:.4f}")
+        # Show non-zero elements near max for context
+        nz_py = (pf.abs() > 0.01).nonzero(as_tuple=False)
+        nz_mk = (mf.abs() > 0.01).nonzero(as_tuple=False)
+        print(f"         py non-zero count: {len(nz_py)}  mk non-zero count: {len(nz_mk)}")
     return passed
 
 

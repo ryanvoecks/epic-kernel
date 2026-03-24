@@ -17,7 +17,9 @@ using namespace megakernel;
 
 template <typename Config, typename Globals> struct moe_router {
     static constexpr int opcode = OPCODE_MoE_Router;
-    static constexpr int EXPECTED_OPROJ_ARRIVALS = Globals::num_attention_heads;
+    // Each o_proj instruction covers one output block (iters=1) and adds 1 to the barrier.
+    // The scheduler creates hidden_dim/matvec_block_size output blocks, so we must wait for all of them.
+    static constexpr int EXPECTED_OPROJ_ARRIVALS = Globals::hidden_dim / Globals::matvec_block_size;
 
     // Semaphore 0: activation + norm weights loaded
     __device__ static inline kittens::semaphore &
@@ -106,6 +108,9 @@ template <typename Config, typename Globals> struct moe_router {
                 s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
             }
             kittens::group<Config::NUM_CONSUMER_WARPS>::sync(0);
+            // Acquire fence: ensure we see all writes to hidden_states that were
+            // committed before the o_proj barrier signal (fence.acq_rel + atomicAdd).
+            asm volatile("fence.acquire.gpu;\n" ::: "memory");
 
             // Wait for norm weights to be loaded via TMA
             kittens::wait(data_loaded(s), 0);

@@ -205,6 +205,9 @@ struct MatVecAddOp {
                 parsed_instruction inst{s};
 
                 kittens::tma::store_async_wait();
+                // Release fence: ensure all TMA writes to hidden_states are globally
+                // visible before we signal the barrier (which downstream SMs spin on).
+                asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
 
                 atomicAdd(&g.Bar[{inst.layer, opcode - 1, 0}], inst.iters);
                 s.record(megakernel::TEVENT_DONE_GMEM_STORE);
