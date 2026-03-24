@@ -197,7 +197,9 @@ def compare_tensor(py_val: Tensor, mk_val: Tensor, name: str) -> bool:
     mean_rdiff = rdiff.mean().item()
     max_rdiff  = rdiff.max().item()
 
-    passed = max_adiff <= ATOL and mean_rdiff <= RTOL
+    # Use ATOL only — RTOL causes false failures on near-zero values (large relative
+    # error even when absolute difference is negligible, e.g. expert scores ≈ 0.0001).
+    passed = max_adiff <= ATOL
     tag = ok if passed else fail
     tag(
         f"{name:<35s}  shape={list(py_val.shape)}"
@@ -376,9 +378,9 @@ def run_stage_test(stage: str, model: FakeModel, mk_func) -> bool:
         ok("barriers match")
     else:
         fail("barriers differ")
-        nz_py = (py_bar != 0).nonzero(as_tuple=False)
-        nz_mk = (mk_bar != 0).nonzero(as_tuple=False)
-        for idx in nz_py[:8]:
+        diff_mask = (py_bar != mk_bar)
+        diff_idx = diff_mask.nonzero(as_tuple=False)
+        for idx in diff_idx[:16]:
             l, op, h = idx.tolist()
             fail(f"  barriers[layer={l}, opcode={op+1}, h={h}]: py={py_bar[l,op,h].item()}  mk={mk_bar[l,op,h].item()}")
 

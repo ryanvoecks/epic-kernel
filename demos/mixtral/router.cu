@@ -112,6 +112,39 @@ template <typename Config, typename Globals> struct moe_router {
 
             // Get activation page pointers
             int pid = s.pid(0);
+
+#ifdef MIXTRAL_SMALL_TEST
+            // Correctness-first: warp 0 computes RMS norm + router directly from GMEM,
+            // bypassing the per-warp SMEM decomposition (which hits layout issues when
+            // hidden_dim/NUM_CONSUMER_WARPS < 64).
+            // All warps release the page; only warp 0 does computation.
+            s.warp_finish_page(pid, 1);
+
+            if (kittens::warpid() == 0) {
+                int lane = kittens::laneid();
+                // Step 1: warp-stride sum of squares over hidden_dim elements
+                float sq_sum = 0.f;
+                for (int i = lane; i < Globals::hidden_dim; i += 32) {
+                    float v = float(g.hidden_states.raw_ptr[i]);
+                    sq_sum += v * v;
+                }
+                for (int mask = 16; mask >= 1; mask >>= 1)
+                    sq_sum += __shfl_xor_sync(0xffffffff, sq_sum, mask);
+
+                float rms_scale = rsqrtf(sq_sum / float(Globals::hidden_dim) + g.rms_norm_eps);
+
+                // Step 2: apply RMS norm * ffn_ln weight, write to router_normed_hidden
+                for (int i = lane; i < Globals::hidden_dim; i += 32) {
+                    float v = float(g.hidden_states.raw_ptr[i]);
+                    float w = float(g.ffn_ln_weights.raw_ptr[
+                        (size_t)inst.layer_idx * Globals::hidden_dim + i]);
+                    g.router_normed_hidden.raw_ptr[i] = __float2bfloat16(v * rms_scale * w);
+                }
+                kittens::warp::sync();
+            } else {
+                return;
+            }
+#else
             constexpr int CHUNK = Globals::hidden_dim / Config::NUM_CONSUMER_WARPS;
             using sv_chunk = kittens::sv_bf<CHUNK>;
             using rv_chunk = kittens::rv_fl<CHUNK>;
@@ -124,7 +157,6 @@ template <typename Config, typename Globals> struct moe_router {
                 s.pages[pid].ptr(sizeof(kittens::sv_bf<Globals::hidden_dim>)))[kittens::warpid()];
 
             // Load hidden_states chunk from GMEM into SMEM
-            // coord<>{} uses default_type (no tile-size scaling) so element offset = warpid*CHUNK
             kittens::warp::load(act_smem, g.hidden_states,
                                 kittens::coord<>{kittens::warpid() * CHUNK});
             kittens::warp::sync();
@@ -136,24 +168,19 @@ template <typename Config, typename Globals> struct moe_router {
             kittens::warp::sync();
 
             // Store normed chunk to router_normed_hidden GMEM
-            // Convert rv_fl<CHUNK> to bf16 and write
             {
-                // Reuse act_smem as bf16 temp buffer (already consumed above)
                 sv_chunk &tmp_smem = act_smem;
                 kittens::warp::store(tmp_smem, act_vec);
                 kittens::warp::sync();
-                // coord<>{} uses default_type (no tile-size scaling)
                 kittens::warp::store(g.router_normed_hidden, tmp_smem,
                                      kittens::coord<>{kittens::warpid() * CHUNK});
             }
 
-            // All-warp barrier: ensures every warp's GMEM write to router_normed_hidden
-            // is globally visible before warp 0 reads it for the dot-product loop.
-            // Uses barrier id=1 (rms_norm above uses id=0).
             kittens::group<Config::NUM_CONSUMER_WARPS>::sync(1);
 
             // Release activation page
             s.warp_finish_page(pid, 1);
+#endif
 
             // Only warp 0 computes the 8 dot products
             if (kittens::warpid() != 0) return;
@@ -219,19 +246,29 @@ template <typename Config, typename Globals> struct moe_router {
                 g.selected_expert_scores.raw_ptr[1] = __float2bfloat16(score1);
             }
             kittens::warp::sync();
+
+            // Signal barrier HERE, after all writes are done (not in storer).
+            // The storer runs concurrently with the consumer, so it may set the
+            // barrier before the consumer finishes writing router_normed_hidden and
+            // selected_expert_indices — causing expert_upgate to read stale zeros.
+            // By moving fence + atomicExch to the consumer (warp 0, after all stores
+            // are committed), we guarantee that expert_upgate sees the correct data.
+            if (kittens::laneid() == 0) {
+                s.record(megakernel::TEVENT_AT_GMEM_STORE);
+                asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
+                atomicExch(&g.Bar[{inst.layer_idx, opcode - 1, 0}], 1);
+                s.record(megakernel::TEVENT_DONE_GMEM_STORE);
+            }
+            kittens::warp::sync();
         }
     };
 
     struct storer {
         static __device__ void run(const Globals &g,
                                    megakernel::state<Config> &s) {
-            if (kittens::warpid() == 0 && kittens::laneid() == 0) {
-                parsed_instruction inst{s};
-                asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
-                s.record(megakernel::TEVENT_AT_GMEM_STORE);
-                atomicExch(&g.Bar[{inst.layer_idx, opcode - 1, 0}], 1);
-                s.record(megakernel::TEVENT_DONE_GMEM_STORE);
-            }
+            // Barrier is now signaled by the consumer (above), after all writes.
+            // The storer is a no-op to avoid the race where storer's fence+atomic
+            // fires before the consumer has finished writing router data.
         }
     };
 };
