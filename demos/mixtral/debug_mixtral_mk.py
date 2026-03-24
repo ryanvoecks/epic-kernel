@@ -60,6 +60,13 @@ RTOL = 5e-2
 # bit- or tolerance-equivalent to the PyVM einsum reference.
 STAGE_BUFFER_ATOL: dict[tuple[str, str], float] = {
     ("expert_upgate", "expert_silu_out"): 24.0,
+    # Downproj accumulates bfloat16 store_add_async from multiple SMs in
+    # non-deterministic order.  At hidden_states magnitudes ~16K–32K,
+    # 1 bfloat16 ULP = 128–256.  Allow 4 ULPs of slack.
+    ("downproj", "hidden_states"):        512.0,
+    # The full-stage hidden_states check sees the same downproj bfloat16
+    # accumulation error (carried forward from the last layer's downproj).
+    ("full", "hidden_states"):            512.0,
 }
 
 # Ordered list of testable stages

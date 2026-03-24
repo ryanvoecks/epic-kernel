@@ -23,7 +23,9 @@
 // Small-scale dimensions for memory-constrained correctness testing.
 // hidden=512, intermediate=1024, head_dim=64, 8 heads, 2 kv-heads,
 // 4 experts, 2 selected. matvec_reduction=gcd(1024,512)=512.
-#define MIXTRAL_NUM_LAYERS         2
+// num_layers=1 matches the debug script's NUM_LAYERS=1 so that the lm_head
+// gmem_wait index (num_layers-1=0) aligns with the Python barriers tensor.
+#define MIXTRAL_NUM_LAYERS         1
 #define MIXTRAL_HIDDEN_DIM         512
 #define MIXTRAL_INTERMEDIATE_DIM   1024
 #define MIXTRAL_HEAD_DIM           64

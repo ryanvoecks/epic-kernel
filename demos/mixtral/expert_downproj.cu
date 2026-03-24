@@ -68,17 +68,72 @@ template <typename Config, typename Globals> struct expert_downproj {
             kittens::sv_bf<16> &output_smem_bf =
                 *reinterpret_cast<kittens::sv_bf<16> *>(output_scratch_start);
 
+            // Check if this expert is active
+            bool is_active =
+                (g.selected_expert_indices.raw_ptr[0] == inst.expert_idx ||
+                 g.selected_expert_indices.raw_ptr[1] == inst.expert_idx);
+
+#ifdef MIXTRAL_SMALL_TEST
+            // When REDUCTION_DIM_PER_WARP < 64, the reinterpreted subtile type
+            // st_bf<16, RDPW> has a different swizzle pattern than the TMA-loaded
+            // tile, so the partial sums in scratch memory are garbage.  Bypass by
+            // recomputing the down-proj matvec result directly from global memory
+            // over the assigned column slice.
+            if constexpr (pipeline::REDUCTION_DIM_PER_WARP < 64) {
+                constexpr int RD = Globals::matvec_reduction_size;
+                if (kittens::laneid() < 16) {
+                    int lane = kittens::laneid();
+                    int row  = block_idx * 16 + lane;
+                    int C    = Globals::intermediate_dim; // number of columns
+                    int R    = Globals::hidden_dim;       // number of rows
+                    int depth_off = inst.depth * R * C;
+
+                    // Sum over the assigned reduction column chunk:
+                    //   [start_reduction_col, start_reduction_col + RD)
+                    float acc = 0.f;
+                    for (int j = inst.start_reduction_col;
+                         j < inst.start_reduction_col + RD;
+                         j++) {
+                        float a = float(__ldcg(&g.expert_silu_out.raw_ptr[
+                                        inst.expert_idx * C + j]));
+                        float w = float(__ldcg(&g.expert_down_weights.raw_ptr[
+                                        depth_off + row * C + j]));
+                        acc += a * w;
+                    }
+
+                    // Apply expert score
+                    float score = 0.f;
+                    if (is_active) {
+                        if (g.selected_expert_indices.raw_ptr[0] == inst.expert_idx)
+                            score = float(g.selected_expert_scores.raw_ptr[0]);
+                        else
+                            score = float(g.selected_expert_scores.raw_ptr[1]);
+                    }
+                    acc *= score;
+
+                    output_smem_bf[lane] = __float2bfloat16(acc);
+                }
+                kittens::warp::sync();
+
+                if (is_active) {
+                    if (kittens::laneid() == 0) {
+                        s.record(megakernel::TEVENT_OUTPUT_READY);
+                        kittens::tma::store_add_async<cache_policy::EVICT_LAST>(
+                            g.hidden_states, output_smem_bf, {block_idx});
+                        kittens::tma::store_async_read_wait();
+                    }
+                }
+                kittens::warp::sync();
+                return;
+            }
+#endif
+
             kittens::rv_fl<16> output_rv;
             matvec_reduce<Config, kittens::sv_fl<16>, kittens::rv_fl<16>,
                           pipeline::SCRATCH_BYTES_PER_WARP>(
                 output_scratch_start, output_rv);
 
             kittens::warp::sync();
-
-            // Check if this expert is active
-            bool is_active =
-                (g.selected_expert_indices.raw_ptr[0] == inst.expert_idx ||
-                 g.selected_expert_indices.raw_ptr[1] == inst.expert_idx);
 
             if (!is_active) {
                 kittens::warp::sync();
