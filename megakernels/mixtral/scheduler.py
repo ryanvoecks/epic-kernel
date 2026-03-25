@@ -202,50 +202,31 @@ def schedule_expert_upgate(globs: MixtralGlobals, layer_idx: int) -> list[Expert
 def schedule_expert_downproj(
     globs: MixtralGlobals, layer_idx: int
 ) -> list[ExpertDownProjAccum]:
-    """Schedule DownProj for all 8 experts."""
+    """Schedule DownProj for all experts.
+
+    Creates one instruction per (expert_idx, col_idx) group so every group is
+    guaranteed to execute. The total instruction count (num_experts *
+    num_col_splits) may exceed sm_count; assign_to_sms distributes them across
+    SMs with multiple instructions per SM as needed. Capping at sm_count would
+    leave some groups unscheduled, causing a barrier deadlock when a token
+    routes to an expert whose col-splits were skipped.
+    """
     num_down_blocks = assert_div(globs.hidden_size, globs.down_proj_block_size)
     num_col_splits = assert_div(globs.intermediate_size, globs.matvec_reduction_size)
-    sm_count = globs.sm_count()
     num_experts = globs.num_experts
 
-    jobs = []
+    instructions = []
     for expert_idx in range(num_experts):
         for col_idx in range(num_col_splits):
-            for down_block_idx in range(num_down_blocks):
-                jobs.append((expert_idx, col_idx, down_block_idx))
-
-    # Cap effective SMs to the number of jobs so every SM gets ≥ 1 job.
-    effective_sms = min(sm_count, len(jobs))
-    instructions = []
-    num_assigned = 0
-    for sm_idx in range(effective_sms):
-        jobs_left = len(jobs) - num_assigned
-        sms_left = effective_sms - sm_idx
-        jobs_per_sm = jobs_left / sms_left
-
-        jobs_for_sm = round(jobs_per_sm)
-        raw = jobs[num_assigned : num_assigned + jobs_for_sm]
-
-        # Ensure all jobs for this SM share the same (expert_idx, col_idx)
-        expert_idx, col_idx = raw[0][0], raw[0][1]
-        sliced = [j for j in raw if j[0] == expert_idx and j[1] == col_idx]
-        assert len(sliced) > 0
-
-        start_block = sliced[0][2]
-        block_indices = [j[2] for j in sliced]
-        assert block_indices == list(range(start_block, start_block + len(sliced)))
-
-        instructions.append(
-            ExpertDownProjAccum(
-                layer_idx=layer_idx,
-                expert_idx=expert_idx,
-                start_block_idx=start_block,
-                end_block_idx=start_block + len(sliced),
-                reduction_block_idx=col_idx,
+            instructions.append(
+                ExpertDownProjAccum(
+                    layer_idx=layer_idx,
+                    expert_idx=expert_idx,
+                    start_block_idx=0,
+                    end_block_idx=num_down_blocks,
+                    reduction_block_idx=col_idx,
+                )
             )
-        )
-        num_assigned += len(sliced)
-
     return instructions
 
 

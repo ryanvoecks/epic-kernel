@@ -59,7 +59,7 @@ def interpret_with_mk(globs: MixtralGlobals, mk_func):
 
         # LM head
         lm_head_norm,                # lm_head_norm_weights
-        globs.lm_head_weights,       # lm_head_weights
+        globs.lm_head_weights.data,  # lm_head_weights (nn.Parameter → plain Tensor for C++ binding)
 
         # KV cache (4D for CUDA)
         fourD_k,

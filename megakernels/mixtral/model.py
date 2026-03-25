@@ -526,28 +526,32 @@ class MixtralForCausalLM(nn.Module):
             attn.v_proj.weight[:] = v
 
         # Expert weights: [num_layers, num_experts, ...]
+        # Process one weight type at a time and replace each nn.Parameter with a
+        # view into the stacked tensor so the original per-expert storage is freed
+        # before the next type is stacked. This keeps peak GPU memory manageable
+        # (avoids holding all three stacked tensors + originals simultaneously).
         num_experts = config.num_local_experts
-        expert_gate_list = []
-        expert_up_list = []
-        expert_down_list = []
-        for m in moes:
-            gate_layer = torch.stack([m.experts[j].w1.weight for j in range(num_experts)], dim=0)
-            up_layer = torch.stack([m.experts[j].w3.weight for j in range(num_experts)], dim=0)
-            down_layer = torch.stack([m.experts[j].w2.weight for j in range(num_experts)], dim=0)
-            expert_gate_list.append(gate_layer)
-            expert_up_list.append(up_layer)
-            expert_down_list.append(down_layer)
 
-        stacked_expert_gate = torch.stack(expert_gate_list, dim=0)
-        stacked_expert_up = torch.stack(expert_up_list, dim=0)
-        stacked_expert_down = torch.stack(expert_down_list, dim=0)
+        def stack_expert_weights(attr: str) -> torch.Tensor:
+            per_layer = [
+                torch.stack([getattr(m.experts[j], attr).weight for j in range(num_experts)], dim=0)
+                for m in moes
+            ]
+            stacked = torch.stack(per_layer, dim=0)
+            del per_layer
+            # Replace per-expert parameters with views into the stacked tensor so
+            # the original ~24 GB of individual weight storage can be freed.
+            for i, m in enumerate(moes):
+                for j in range(num_experts):
+                    getattr(m.experts[j], attr).weight = nn.Parameter(
+                        stacked[i, j], requires_grad=False
+                    )
+            torch.cuda.empty_cache()
+            return stacked
 
-        # Assign back
-        for i, m in enumerate(moes):
-            for j in range(num_experts):
-                m.experts[j].w1.weight[:] = stacked_expert_gate[i, j]
-                m.experts[j].w3.weight[:] = stacked_expert_up[i, j]
-                m.experts[j].w2.weight[:] = stacked_expert_down[i, j]
+        stacked_expert_gate = stack_expert_weights("w1")
+        stacked_expert_up   = stack_expert_weights("w3")
+        stacked_expert_down = stack_expert_weights("w2")
 
         self.stacked_params = MixtralStackedParams(
             qkv_proj=stacked_qkv,
