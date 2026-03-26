@@ -295,6 +295,13 @@ constexpr int TEVENT_TRIPLES_OUTPUT_READY = 125;
                         ops...>::template run<void, config, globals,           \
                                               ::megakernel::state<config>>(    \
                 mks.instruction()[0], g, mks);                                 \
+            /* All worker warps (consumer, loader, storer, launcher) must sync   \
+             * before any can proceed to the next instruction. Without this,   \
+             * the 2-deep instruction pipeline allows fast warps to race       \
+             * ahead, causing named barriers and TMA operations to collide     \
+             * across instruction boundaries. */                               \
+            asm volatile("bar.sync %0, %1;\n" :: "r"(7),                       \
+                         "r"((config::NUM_WARPS - 1) * 32));                   \
             if (kittens::laneid() == 0) {                                               \
                 if (is_consumer) {                                             \
                     mks.record(start_event + 2 * kittens::warpid() + 1);                \

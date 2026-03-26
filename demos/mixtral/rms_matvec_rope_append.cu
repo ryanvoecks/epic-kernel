@@ -18,7 +18,7 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
         (Globals::num_attention_heads + Globals::num_kv_heads) *
         Globals::head_dim / Globals::matvec_block_size;
 
-    // Wait for ExpertDownProjAccum of previous layer
+    // Wait for ExpertDownProjFused of previous layer
     static constexpr int EXPECTED_ARRIVAL_COUNT = Globals::qkv_expected_arrivals;
 
     using rope_t = kittens::sv_fl<Globals::head_dim>;
@@ -61,7 +61,7 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
             if (inst.layer_idx > 0) {
                 while (
                     *(volatile int *)&g.Bar[{inst.layer_idx - 1,
-                                             OPCODE_ExpertDownProjAccum - 1,
+                                             OPCODE_ExpertDownProjFused - 1,
                                              0}] <
                     EXPECTED_ARRIVAL_COUNT) {
                     __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);

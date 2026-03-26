@@ -6,8 +6,7 @@
 #include "attention_partial.cu"
 #include "attention_reduction.cu"
 #include "matvec_adds.cu"
-#include "router.cu"
-#include "expert_upgate.cu"
+#include "rms_router_matvec.cu"
 #include "expert_downproj.cu"
 #include "rms_lm_head.cu"
 
@@ -16,14 +15,13 @@
 using namespace kittens;
 using namespace megakernel;
 
-using rms_qkv_rope_append_op = rms_qkv_rope_append<config, mixtral_globals>;
-using attention_partial_op   = attention_partial<config, mixtral_globals>;
-using attention_reduction_op = attention_reduction<config, mixtral_globals>;
-using o_proj_op              = o_proj<config, mixtral_globals>;
-using moe_router_op          = moe_router<config, mixtral_globals>;
-using expert_upgate_op       = expert_upgate<config, mixtral_globals>;
-using expert_downproj_op     = expert_downproj<config, mixtral_globals>;
-using rms_lm_head_op         = rms_lm_head<config, mixtral_globals>;
+using rms_qkv_rope_append_op    = rms_qkv_rope_append<config, mixtral_globals>;
+using attention_partial_op      = attention_partial<config, mixtral_globals>;
+using attention_reduction_op    = attention_reduction<config, mixtral_globals>;
+using o_proj_op                 = o_proj<config, mixtral_globals>;
+using rms_router_upgate_op      = rms_router_upgate<config, mixtral_globals>;
+using expert_downproj_fused_op  = expert_downproj_fused<config, mixtral_globals>;
+using rms_lm_head_op            = rms_lm_head<config, mixtral_globals>;
 
 #ifdef MIXTRAL_SMALL_TEST
 PYBIND11_MODULE(mk_mixtral_small, m)
@@ -38,9 +36,8 @@ PYBIND11_MODULE(mk_mixtral, m)
            attention_partial_op,
            attention_reduction_op,
            o_proj_op,
-           moe_router_op,
-           expert_upgate_op,
-           expert_downproj_op,
+           rms_router_upgate_op,
+           expert_downproj_fused_op,
            rms_lm_head_op>>(
         m, "mk_mixtral",
 

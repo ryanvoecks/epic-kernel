@@ -59,41 +59,39 @@ RTOL = 5e-2
 # Blackwell WGMMA swizzle-path fault; this path is numerically close but not
 # bit- or tolerance-equivalent to the PyVM einsum reference.
 STAGE_BUFFER_ATOL: dict[tuple[str, str], float] = {
-    ("expert_upgate", "expert_silu_out"): 24.0,
+    ("rms_router_upgate", "expert_silu_out"): 24.0,
     # Downproj accumulates bfloat16 store_add_async from multiple SMs in
     # non-deterministic order.  At hidden_states magnitudes ~16K–32K,
     # 1 bfloat16 ULP = 128–256.  Allow 4 ULPs of slack.
-    ("downproj", "hidden_states"):        512.0,
+    ("downproj_fused", "hidden_states"):     512.0,
     # The full-stage hidden_states check sees the same downproj bfloat16
     # accumulation error (carried forward from the last layer's downproj).
-    ("full", "hidden_states"):            512.0,
+    ("full", "hidden_states"):               512.0,
 }
 
 # Ordered list of testable stages
-ALL_STAGES = ["qkv", "partial", "reduction", "oproj", "router", "expert_upgate", "downproj", "full"]
+ALL_STAGES = ["qkv", "partial", "reduction", "oproj", "rms_router_upgate", "downproj_fused", "full"]
 
 # stop_after_op argument for make_dag (None = full)
 STAGE_STOP = {
-    "qkv":           "qkv",
-    "partial":       "partial",
-    "reduction":     "reduction",
-    "oproj":         "oproj",
-    "router":        "router",
-    "expert_upgate": "expert_upgate",
-    "downproj":      "downproj",
-    "full":          None,
+    "qkv":                "qkv",
+    "partial":            "partial",
+    "reduction":          "reduction",
+    "oproj":              "oproj",
+    "rms_router_upgate":  "rms_router_upgate",
+    "downproj_fused":     "downproj_fused",
+    "full":               None,
 }
 
 # Buffers to compare at each stage (attr names on MixtralGlobals)
 STAGE_BUFFERS = {
-    "qkv":           ["post_ln_rope_q", "k_cache", "v_cache"],
-    "partial":       ["attn_out", "attn_out_intermediates", "attn_lse_intermediates"],
-    "reduction":     ["attn_out"],
-    "oproj":         ["hidden_states"],
-    "router":        ["selected_expert_indices", "selected_expert_scores", "router_normed_hidden"],
-    "expert_upgate": ["hidden_states", "router_normed_hidden", "selected_expert_indices", "expert_silu_out"],
-    "downproj":      ["hidden_states"],
-    "full":          ["logits", "hidden_states"],
+    "qkv":                ["post_ln_rope_q", "k_cache", "v_cache"],
+    "partial":            ["attn_out", "attn_out_intermediates", "attn_lse_intermediates"],
+    "reduction":          ["attn_out"],
+    "oproj":              ["hidden_states"],
+    "rms_router_upgate":  ["selected_expert_indices", "selected_expert_scores", "router_normed_hidden", "expert_silu_out"],
+    "downproj_fused":     ["hidden_states"],
+    "full":               ["logits", "hidden_states"],
 }
 
 

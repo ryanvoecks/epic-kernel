@@ -19,15 +19,14 @@ from megakernels.demos.latency.python_vm import (
 )
 from megakernels.llama import apply_rotary_pos_emb_interleaved
 from megakernels.mixtral.instructions import (
-    ExpertDownProjAccum,
-    ExpertUpGateSiLU,
+    ExpertDownProjFused,
     Mixtral_AttnReduction,
     Mixtral_OProj,
     Mixtral_PartialAttn,
     Mixtral_QKV,
     Mixtral_RMS_LM_Head,
     MixtralGlobals,
-    MoE_Router,
+    RmsRouterUpgate,
 )
 
 
@@ -43,8 +42,8 @@ def _expected_oproj_barrier(globs: MixtralGlobals) -> int:
     return globs.hidden_size // globs.o_proj_block_size
 
 
-def _expected_upgate_barrier(globs: MixtralGlobals) -> int:
-    """Expected sum of UpGate barriers for ONE expert."""
+def _expected_rms_router_upgate_barrier(globs: MixtralGlobals) -> int:
+    """Expected total RmsRouterUpgate barrier increments."""
     return globs.intermediate_size // globs.expert_proj_block_size
 
 
@@ -62,7 +61,7 @@ def _expected_downproj_barrier(globs: MixtralGlobals) -> int:
 def solve_qkv(globs: MixtralGlobals, ins: Mixtral_QKV):
     layer_idx = ins.layer_idx
     if layer_idx > 0:
-        op_barriers = globs.barriers[layer_idx - 1, ins.prev_opcode() - 1]
+        op_barriers = globs.barriers[layer_idx - 1, ExpertDownProjFused.opcode() - 1]
         assert op_barriers[0] == _expected_downproj_barrier(globs), (
             f"Layer {layer_idx}: expected downproj barrier {_expected_downproj_barrier(globs)}, "
             f"got {op_barriers[0]}"
@@ -223,13 +222,13 @@ def solve_oproj(globs: MixtralGlobals, ins: Mixtral_OProj):
 
 
 # ---------------------------------------------------------------------------
-# Opcode 5 — MoE_Router
+# Opcode 5 — RmsRouterUpgate (fused)
 # ---------------------------------------------------------------------------
 
-def solve_router(globs: MixtralGlobals, ins: MoE_Router):
+def solve_rms_router_upgate(globs: MixtralGlobals, ins: RmsRouterUpgate):
     op_barriers = globs.barriers[ins.layer_idx, ins.prev_opcode() - 1]
     assert op_barriers[0] == _expected_oproj_barrier(globs), (
-        f"Router: expected oproj barrier {_expected_oproj_barrier(globs)}, got {op_barriers[0]}"
+        f"RmsRouterUpgate: expected oproj barrier {_expected_oproj_barrier(globs)}, got {op_barriers[0]}"
     )
 
     # 1. RMS norm of hidden_states (FFN pre-norm)
@@ -238,6 +237,9 @@ def solve_router(globs: MixtralGlobals, ins: MoE_Router):
         weight=globs.ffn_ln_weights[ins.layer_idx],
         eps=globs.rms_norm_eps,
     )
+
+    # Save normed hidden for reuse
+    globs.router_normed_hidden = normed
 
     # 2. Router matVec: [num_experts, hidden] @ [hidden] → [num_experts]
     router_logits = (globs.router_weights[ins.layer_idx].float() @ normed.float())
@@ -250,103 +252,74 @@ def solve_router(globs: MixtralGlobals, ins: MoE_Router):
     globs.selected_expert_indices.copy_(top_indices.to(torch.int32))
     globs.selected_expert_scores.copy_(top_scores.to(globs.selected_expert_scores.dtype))
 
-    # Save normed hidden for reuse by all ExpertUpGateSiLU instructions
-    globs.router_normed_hidden = normed
-
-    # Signal that router is complete
-    globs.barriers[ins.layer_idx, ins.opcode() - 1][0] = 1
-
-
-# ---------------------------------------------------------------------------
-# Opcode 6 — ExpertUpGateSiLU
-# ---------------------------------------------------------------------------
-
-def solve_expert_upgate(globs: MixtralGlobals, ins: ExpertUpGateSiLU):
-    # Check router is done
-    op_barriers = globs.barriers[ins.layer_idx, ins.prev_opcode() - 1]
-    assert op_barriers[0] == 1, (
-        f"ExpertUpGate: router barrier not set (layer={ins.layer_idx})"
-    )
-
-    # Skip if this expert was not selected
+    # 4. Gate+Up matvec + SiLU for both selected experts
     active_experts = globs.selected_expert_indices.tolist()
-    if ins.expert_idx not in active_experts:
-        # Still increment barrier so ExpertDownProj can proceed
-        globs.barriers[ins.layer_idx, ins.opcode() - 1][ins.expert_idx] += ins.num_blocks
-        return
-
-    assert globs.router_normed_hidden is not None
-    normed = globs.router_normed_hidden
-
     block_size = globs.expert_proj_block_size
-    for block_idx in ins.block_indices():
-        start, end = get_start_end(block_size, block_idx)
-        gate_out, _, _ = matvec(
-            mat=globs.expert_gate_weights[ins.layer_idx, ins.expert_idx],
-            vec=normed,
-            block_size=block_size,
-            block_idx=block_idx,
-        )
-        up_out, _, _ = matvec(
-            mat=globs.expert_up_weights[ins.layer_idx, ins.expert_idx],
-            vec=normed,
-            block_size=block_size,
-            block_idx=block_idx,
-        )
-        globs.expert_silu_out[ins.expert_idx, start:end] = (
-            F.silu(gate_out) * up_out
-        ).to(globs.expert_silu_out.dtype)
+    for expert_idx in active_experts:
+        for block_idx in ins.block_indices():
+            start, end = get_start_end(block_size, block_idx)
+            gate_out, _, _ = matvec(
+                mat=globs.expert_gate_weights[ins.layer_idx, expert_idx],
+                vec=normed,
+                block_size=block_size,
+                block_idx=block_idx,
+            )
+            up_out, _, _ = matvec(
+                mat=globs.expert_up_weights[ins.layer_idx, expert_idx],
+                vec=normed,
+                block_size=block_size,
+                block_idx=block_idx,
+            )
+            globs.expert_silu_out[expert_idx, start:end] = (
+                F.silu(gate_out) * up_out
+            ).to(globs.expert_silu_out.dtype)
 
-    globs.barriers[ins.layer_idx, ins.opcode() - 1][ins.expert_idx] += ins.num_blocks
+    globs.barriers[ins.layer_idx, ins.opcode() - 1][0] += ins.num_blocks
 
 
 # ---------------------------------------------------------------------------
-# Opcode 7 — ExpertDownProjAccum
+# Opcode 6 — ExpertDownProjFused
 # ---------------------------------------------------------------------------
 
-def solve_expert_downproj(globs: MixtralGlobals, ins: ExpertDownProjAccum):
-    # Check UpGate for THIS expert is done
+def solve_expert_downproj_fused(globs: MixtralGlobals, ins: ExpertDownProjFused):
+    # Check RmsRouterUpgate is done
     op_barriers = globs.barriers[ins.layer_idx, ins.prev_opcode() - 1]
-    expected_upgate = _expected_upgate_barrier(globs)
-    assert op_barriers[ins.expert_idx] == expected_upgate, (
-        f"ExpertDownProj: expert {ins.expert_idx} upgate barrier "
-        f"expected {expected_upgate}, got {op_barriers[ins.expert_idx]}"
+    expected_upgate = _expected_rms_router_upgate_barrier(globs)
+    assert op_barriers[0] == expected_upgate, (
+        f"ExpertDownProjFused: expected upgate barrier "
+        f"{expected_upgate}, got {op_barriers[0]}"
     )
 
-    # Skip if this expert was not selected
     active_experts = globs.selected_expert_indices.tolist()
-    if ins.expert_idx not in active_experts:
-        return
 
-    # Look up weight for this expert
-    slot = active_experts.index(ins.expert_idx)
-    weight = globs.selected_expert_scores[slot].float()
-
-    # Weighted accumulate into hidden_states
     block_size = globs.down_proj_block_size
-    for block_idx in range(ins.start_block_idx, ins.end_block_idx):
-        out, start, end = matvec(
-            mat=globs.expert_down_weights[ins.layer_idx, ins.expert_idx],
-            vec=globs.expert_silu_out[ins.expert_idx],
-            block_size=block_size,
-            block_idx=block_idx,
-            reduce=True,
-            reduction_size=globs.matvec_reduction_size,
-            reduction_idx=ins.reduction_block_idx,
-        )
-        globs.hidden_states[start:end] += (weight * out).to(globs.hidden_states.dtype)
+    for expert_loop_idx in range(globs.num_experts_per_tok):
+        expert_idx = active_experts[expert_loop_idx]
+        score = globs.selected_expert_scores[expert_loop_idx].float()
+
+        for block_idx in range(ins.start_block_idx, ins.end_block_idx):
+            out, start, end = matvec(
+                mat=globs.expert_down_weights[ins.layer_idx, expert_idx],
+                vec=globs.expert_silu_out[expert_idx],
+                block_size=block_size,
+                block_idx=block_idx,
+                reduce=True,
+                reduction_size=globs.matvec_reduction_size,
+                reduction_idx=ins.reduction_block_idx,
+            )
+            globs.hidden_states[start:end] += (score * out).to(globs.hidden_states.dtype)
 
     globs.barriers[ins.layer_idx, ins.opcode() - 1][0] += (
-        ins.end_block_idx - ins.start_block_idx
+        (ins.end_block_idx - ins.start_block_idx) * globs.num_experts_per_tok
     )
 
 
 # ---------------------------------------------------------------------------
-# Opcode 8 — Mixtral_RMS_LM_Head
+# Opcode 7 — Mixtral_RMS_LM_Head
 # ---------------------------------------------------------------------------
 
 def solve_lm_head(globs: MixtralGlobals, ins: Mixtral_RMS_LM_Head):
-    op_barriers = globs.barriers[globs.num_hidden_layers - 1, ins.prev_opcode() - 1]
+    op_barriers = globs.barriers[globs.num_hidden_layers - 1, ExpertDownProjFused.opcode() - 1]
     assert op_barriers[0] == _expected_downproj_barrier(globs), (
         f"LM head: expected barrier {_expected_downproj_barrier(globs)}, got {op_barriers[0]}"
     )
@@ -373,8 +346,7 @@ INSTRUCTION_TO_SOLVER = {
     Mixtral_PartialAttn: solve_partial_attn,
     Mixtral_AttnReduction: solve_attn_reduction,
     Mixtral_OProj: solve_oproj,
-    MoE_Router: solve_router,
-    ExpertUpGateSiLU: solve_expert_upgate,
-    ExpertDownProjAccum: solve_expert_downproj,
+    RmsRouterUpgate: solve_rms_router_upgate,
+    ExpertDownProjFused: solve_expert_downproj_fused,
     Mixtral_RMS_LM_Head: solve_lm_head,
 }

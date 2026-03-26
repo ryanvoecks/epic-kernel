@@ -2,14 +2,13 @@
 Mixtral megakernel instructions and globals.
 
 Opcode mapping:
-  1 - Mixtral_QKV          (LayerNorm + QKV matvec + RoPE + KV append)
-  2 - Mixtral_PartialAttn  (Partial flash attention)
-  3 - Mixtral_AttnReduction(Tree-reduce partial attention)
-  4 - Mixtral_OProj        (Output projection + residual)
-  5 - MoE_Router           (FFN RMS norm + router matvec + top-2 selection)
-  6 - ExpertUpGateSiLU     (Gate+Up matvec + SiLU, conditional on expert active)
-  7 - ExpertDownProjAccum  (Down proj + weighted accumulate into hidden)
-  8 - Mixtral_RMS_LM_Head  (Final RMS norm + LM head matvec)
+  1 - Mixtral_QKV            (LayerNorm + QKV matvec + RoPE + KV append)
+  2 - Mixtral_PartialAttn    (Partial flash attention)
+  3 - Mixtral_AttnReduction  (Tree-reduce partial attention)
+  4 - Mixtral_OProj          (Output projection + residual)
+  5 - RmsRouterUpgate        (RMS norm + router + upgate+SiLU for both selected experts)
+  6 - ExpertDownProjFused    (downproj for both selected experts)
+  7 - Mixtral_RMS_LM_Head    (Final RMS norm + LM head matvec)
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -33,7 +32,7 @@ class MixtralGlobals(BaseGlobals):
     router_normed_hidden: Tensor     # [hidden_size] — RMS-normed hidden, written by router, read by experts
     logits: Tensor                   # [vocab_size]
 
-    # Router runtime outputs (written by MoE_Router, read by ExpertUp/Down)
+    # Router runtime outputs (written by RmsRouterUpgate, read by ExpertDownProjFused)
     selected_expert_indices: Tensor  # [num_experts_per_tok] int32
     selected_expert_scores: Tensor   # [num_experts_per_tok] bfloat16
 
@@ -85,8 +84,8 @@ class Mixtral_QKV(Instruction):
 
     @classmethod
     def prev_opcode(cls) -> int:
-        # Cross-layer dependency: previous layer's ExpertDownProjAccum (opcode 7)
-        return ExpertDownProjAccum.opcode()
+        # Cross-layer dependency: previous layer's ExpertDownProjFused (opcode 6)
+        return ExpertDownProjFused.opcode()
 
     def block_indices(self):
         return list(range(self.start_output_block_idx, self.end_output_block_idx))
@@ -177,18 +176,19 @@ class Mixtral_OProj(Instruction):
 
 
 # ---------------------------------------------------------------------------
-# Opcode 5 — MoE Router
+# Opcode 5 — RmsRouterUpgate (fused RMS norm + router + upgate+SiLU)
 # ---------------------------------------------------------------------------
 
 @dataclass
-class MoE_Router(Instruction):
+class RmsRouterUpgate(Instruction):
     """
-    RMS norm + router matvec [num_experts, hidden] × [hidden] →
-    softmax → top-k selection.
-    Writes selected_expert_indices and selected_expert_scores to globals.
-    Also writes _router_normed (the RMS-normed hidden) as scratch.
+    Fused: RMS norm + router top-2 selection + gate+up matvec + SiLU
+    for both selected experts. Each instruction handles a contiguous
+    range of output blocks.
     """
     layer_idx: int
+    start_block_idx: int
+    num_blocks: int
 
     @classmethod
     def opcode(cls) -> int:
@@ -198,25 +198,31 @@ class MoE_Router(Instruction):
     def prev_opcode(cls) -> int:
         return Mixtral_OProj.opcode()
 
+    def block_indices(self) -> list[int]:
+        return list(range(self.start_block_idx, self.start_block_idx + self.num_blocks))
+
     def cost(self, globs: MixtralGlobals) -> float:
-        return globs.num_experts * globs.hidden_size
+        # Router cost + 2 experts * gate+up matvec
+        return (
+            globs.num_experts * globs.hidden_size
+            + self.num_blocks * globs.expert_proj_block_size * globs.hidden_size * 2 * globs.num_experts_per_tok
+        )
 
 
 # ---------------------------------------------------------------------------
-# Opcode 6 — Expert UpGate + SiLU
+# Opcode 6 — ExpertDownProjFused (downproj for both selected experts)
 # ---------------------------------------------------------------------------
 
 @dataclass
-class ExpertUpGateSiLU(Instruction):
+class ExpertDownProjFused(Instruction):
     """
-    Gate+Up matvec for one expert, conditioned on that expert being active.
-    Serializes as start_block_idx + num_blocks (contiguous range) to fit
-    within the 32-word instruction limit.
+    Down proj for both selected experts + weighted atomic-add into hidden_states.
+    Each instruction handles one reduction column split across all output blocks.
     """
     layer_idx: int
-    expert_idx: int
     start_block_idx: int
-    num_blocks: int
+    end_block_idx: int
+    reduction_block_idx: int
 
     @classmethod
     def opcode(cls) -> int:
@@ -224,49 +230,19 @@ class ExpertUpGateSiLU(Instruction):
 
     @classmethod
     def prev_opcode(cls) -> int:
-        return MoE_Router.opcode()
-
-    def block_indices(self) -> list[int]:
-        return list(range(self.start_block_idx, self.start_block_idx + self.num_blocks))
-
-    def cost(self, globs: MixtralGlobals) -> float:
-        return self.num_blocks * globs.expert_proj_block_size * globs.hidden_size * 2
-
-
-# ---------------------------------------------------------------------------
-# Opcode 7 — Expert Down Projection + Accumulate
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ExpertDownProjAccum(Instruction):
-    """
-    Down proj for one expert (conditional on active) + weighted atomic-add
-    into hidden_states.
-    """
-    layer_idx: int
-    expert_idx: int
-    start_block_idx: int
-    end_block_idx: int
-    reduction_block_idx: int
-
-    @classmethod
-    def opcode(cls) -> int:
-        return 7
-
-    @classmethod
-    def prev_opcode(cls) -> int:
-        return ExpertUpGateSiLU.opcode()
+        return RmsRouterUpgate.opcode()
 
     def cost(self, globs: MixtralGlobals) -> float:
         return (
             (self.end_block_idx - self.start_block_idx)
             * globs.down_proj_block_size
             * globs.intermediate_size
+            * globs.num_experts_per_tok
         )
 
 
 # ---------------------------------------------------------------------------
-# Opcode 8 — RMS norm + LM Head
+# Opcode 7 — RMS norm + LM Head
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -276,11 +252,11 @@ class Mixtral_RMS_LM_Head(Instruction):
 
     @classmethod
     def opcode(cls) -> int:
-        return 8
+        return 7
 
     @classmethod
     def prev_opcode(cls) -> int:
-        return ExpertDownProjAccum.opcode()
+        return ExpertDownProjFused.opcode()
 
     def cost(self, globs: MixtralGlobals) -> float:
         return (

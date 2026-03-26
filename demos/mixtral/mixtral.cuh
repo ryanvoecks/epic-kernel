@@ -11,10 +11,9 @@
 #define OPCODE_PartialAttention     2
 #define OPCODE_AttentionReduction   3
 #define OPCODE_OProj                4
-#define OPCODE_MoE_Router           5
-#define OPCODE_ExpertUpGateSiLU     6
-#define OPCODE_ExpertDownProjAccum  7
-#define OPCODE_RMS_LM_Head          8
+#define OPCODE_RmsRouterUpgate      5
+#define OPCODE_ExpertDownProjFused  6
+#define OPCODE_RMS_LM_Head          7
 
 // ---------------------------------------------------------------------------
 // Architecture constants
@@ -87,7 +86,7 @@ struct globals_t {
     // For downproj each col-split covers matvec_reduction_size columns.
     constexpr static int downproj_reduction_chunk_size = matvec_reduction_size;
 
-    // QKV waits for all active-expert DownProj blocks to finish:
+    // QKV waits for all ExpertDownProjFused blocks to finish:
     //   num_experts_per_tok * (intermediate_dim/matvec_reduction_size) * (hidden_dim/matvec_block_size)
     constexpr static int qkv_expected_arrivals =
         num_experts_per_tok *
@@ -242,13 +241,10 @@ template <typename config = config, typename globals = mixtral_globals>
 struct o_proj;
 
 template <typename config = config, typename globals = mixtral_globals>
-struct moe_router;
+struct rms_router_upgate;
 
 template <typename config = config, typename globals = mixtral_globals>
-struct expert_upgate;
-
-template <typename config = config, typename globals = mixtral_globals>
-struct expert_downproj;
+struct expert_downproj_fused;
 
 template <typename config = config, typename globals = mixtral_globals>
 struct rms_lm_head;

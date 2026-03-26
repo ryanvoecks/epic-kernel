@@ -29,10 +29,11 @@ template <typename Config, typename Globals> struct rms_lm_head {
                                                 megakernel::state<Config> &s) {
             parsed_instruction inst{s};
             while (*(volatile int *)&g.Bar[{Globals::num_layers - 1,
-                                            OPCODE_ExpertDownProjAccum - 1, 0}] <
+                                            OPCODE_ExpertDownProjFused - 1, 0}] <
                    EXPECTED_ARRIVAL_COUNT) {
                 __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
             }
+            asm volatile("fence.acquire.gpu;\n" ::: "memory");
         }
 
         template <int TW>

@@ -4,15 +4,14 @@ import torch
 
 from megakernels.instructions import NoOp
 from megakernels.mixtral.instructions import (
-    ExpertDownProjAccum,
-    ExpertUpGateSiLU,
+    ExpertDownProjFused,
     Mixtral_AttnReduction,
     Mixtral_OProj,
     Mixtral_PartialAttn,
     Mixtral_QKV,
     Mixtral_RMS_LM_Head,
     MixtralGlobals,
-    MoE_Router,
+    RmsRouterUpgate,
 )
 from megakernels.mixtral.model import MixtralForCausalLM
 from megakernels.scheduler import DAG_Node, ScheduleBuilder
@@ -170,63 +169,50 @@ def schedule_qkv(globs: MixtralGlobals, layer_idx: int) -> list[Mixtral_QKV]:
     return instructions
 
 
-def schedule_expert_upgate(globs: MixtralGlobals, layer_idx: int) -> list[ExpertUpGateSiLU]:
-    """Schedule UpGate for all 8 experts (inactive ones are NoOps in CUDA)."""
+def schedule_rms_router_upgate(globs: MixtralGlobals, layer_idx: int) -> list[RmsRouterUpgate]:
+    """Schedule fused RMS+Router+UpGate. Distributes intermediate_dim output blocks across SMs."""
     num_up_blocks = assert_div(globs.intermediate_size, globs.expert_proj_block_size)
     sm_count = globs.sm_count()
-    num_experts = globs.num_experts
-
-    # Distribute blocks across SMs, cycling through experts.
-    # Cap effective SMs to block count so every instruction covers ≥ 1 block.
     effective_sms = min(sm_count, num_up_blocks)
     blocks_per_sm = num_up_blocks / effective_sms
 
     instructions = []
-    for expert_idx in range(num_experts):
-        for sm_idx in range(effective_sms):
-            start = round(sm_idx * blocks_per_sm)
-            end = round((sm_idx + 1) * blocks_per_sm)
-            if start >= end:
-                continue
-            instructions.append(
-                ExpertUpGateSiLU(
-                    layer_idx=layer_idx,
-                    expert_idx=expert_idx,
-                    start_block_idx=start,
-                    num_blocks=end - start,
-                )
+    for sm_idx in range(effective_sms):
+        start = round(sm_idx * blocks_per_sm)
+        end = round((sm_idx + 1) * blocks_per_sm)
+        if start >= end:
+            continue
+        instructions.append(
+            RmsRouterUpgate(
+                layer_idx=layer_idx,
+                start_block_idx=start,
+                num_blocks=end - start,
             )
+        )
     return instructions
 
 
-def schedule_expert_downproj(
+def schedule_expert_downproj_fused(
     globs: MixtralGlobals, layer_idx: int
-) -> list[ExpertDownProjAccum]:
-    """Schedule DownProj for all experts.
+) -> list[ExpertDownProjFused]:
+    """Schedule fused DownProj for both selected experts.
 
-    Creates one instruction per (expert_idx, col_idx) group so every group is
-    guaranteed to execute. The total instruction count (num_experts *
-    num_col_splits) may exceed sm_count; assign_to_sms distributes them across
-    SMs with multiple instructions per SM as needed. Capping at sm_count would
-    leave some groups unscheduled, causing a barrier deadlock when a token
-    routes to an expert whose col-splits were skipped.
+    Creates one instruction per col_idx (not per expert). Each instruction
+    handles both selected experts internally.
     """
     num_down_blocks = assert_div(globs.hidden_size, globs.down_proj_block_size)
     num_col_splits = assert_div(globs.intermediate_size, globs.matvec_reduction_size)
-    num_experts = globs.num_experts
 
     instructions = []
-    for expert_idx in range(num_experts):
-        for col_idx in range(num_col_splits):
-            instructions.append(
-                ExpertDownProjAccum(
-                    layer_idx=layer_idx,
-                    expert_idx=expert_idx,
-                    start_block_idx=0,
-                    end_block_idx=num_down_blocks,
-                    reduction_block_idx=col_idx,
-                )
+    for col_idx in range(num_col_splits):
+        instructions.append(
+            ExpertDownProjFused(
+                layer_idx=layer_idx,
+                start_block_idx=0,
+                end_block_idx=num_down_blocks,
+                reduction_block_idx=col_idx,
             )
+        )
     return instructions
 
 
@@ -381,55 +367,23 @@ def make_dag_layer(
     if stop_after_op == "oproj":
         return new_nodes, o_proj_nodes
 
-    # --- MoE Router (single node — sequential bottleneck) ---
-    router_node = DAG_Node(MoE_Router(layer_idx=layer_idx), o_proj_nodes)
-    new_nodes.append(router_node)
-    if stop_after_op == "router":
-        return new_nodes, [router_node]
+    # --- RmsRouterUpgate (fused: RMS norm + router + upgate for both experts) ---
+    rms_router_upgate_instructions = schedule_rms_router_upgate(globs, layer_idx)
+    rms_router_upgate_nodes = [
+        DAG_Node(ins, o_proj_nodes) for ins in rms_router_upgate_instructions
+    ]
+    new_nodes.extend(rms_router_upgate_nodes)
+    if stop_after_op in ("router", "expert_upgate", "rms_router_upgate"):
+        return new_nodes, rms_router_upgate_nodes
 
-    # --- Expert UpGate (all 8 experts; inactive ones skip in CUDA) ---
-    upgate_instructions = schedule_expert_upgate(globs, layer_idx)
-    # Group by expert for dependency on DownProj
-    upgate_nodes_by_expert: dict[int, list[DAG_Node]] = {e: [] for e in range(globs.num_experts)}
-    upgate_nodes: list[DAG_Node] = []
-    for ins in upgate_instructions:
-        node = DAG_Node(ins, [router_node])
-        upgate_nodes.append(node)
-        upgate_nodes_by_expert[ins.expert_idx].append(node)
-    new_nodes.extend(upgate_nodes)
-    if stop_after_op == "expert_upgate":
-        return new_nodes, upgate_nodes
+    # --- ExpertDownProjFused (handles both selected experts internally) ---
+    downproj_instructions = schedule_expert_downproj_fused(globs, layer_idx)
+    downproj_nodes = [
+        DAG_Node(ins, rms_router_upgate_nodes) for ins in downproj_instructions
+    ]
+    new_nodes.extend(downproj_nodes)
 
-    # --- Expert DownProj (each depends on same-expert UpGate nodes) ---
-    # To avoid races on hidden_states, serialize DownProj: expert 0 before expert 1.
-    # Implement by making expert i+1 depend on all of expert i's DownProj nodes.
-    downproj_instructions = schedule_expert_downproj(globs, layer_idx)
-
-    # Group downproj instructions by expert
-    downproj_by_expert: dict[int, list[ExpertDownProjAccum]] = {
-        e: [] for e in range(globs.num_experts)
-    }
-    for ins in downproj_instructions:
-        downproj_by_expert[ins.expert_idx].append(ins)
-
-    downproj_nodes: list[DAG_Node] = []
-    prev_expert_downproj_nodes: list[DAG_Node] = []
-
-    for expert_idx in range(globs.num_experts):
-        expert_upgate_deps = upgate_nodes_by_expert[expert_idx]
-        # Also depend on previous expert's DownProj to serialize writes to hidden_states
-        deps = expert_upgate_deps + prev_expert_downproj_nodes
-
-        expert_down_nodes: list[DAG_Node] = []
-        for ins in downproj_by_expert[expert_idx]:
-            node = DAG_Node(ins, deps)
-            expert_down_nodes.append(node)
-            downproj_nodes.append(node)
-
-        new_nodes.extend(expert_down_nodes)
-        prev_expert_downproj_nodes = expert_down_nodes
-
-    if stop_after_op in ("downproj", "expert_downproj"):
+    if stop_after_op in ("downproj", "expert_downproj", "downproj_fused"):
         return new_nodes, downproj_nodes
 
     assert stop_after_op is None
