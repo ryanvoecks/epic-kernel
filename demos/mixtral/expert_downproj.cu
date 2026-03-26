@@ -79,7 +79,10 @@ template <typename Config, typename Globals> struct expert_downproj_fused {
             kittens::sv_bf<16> &output_smem_bf =
                 *reinterpret_cast<kittens::sv_bf<16> *>(output_scratch_start);
 
-#ifdef MIXTRAL_SMALL_TEST
+            // When REDUCTION_DIM_PER_WARP < 64, the reinterpreted subtile type
+            // st_bf<16, RDPW> has swizzle_bytes=64 while the loaded page tile
+            // st_bf<16, TILE_WIDTH> has swizzle_bytes=128.  Bypass with a direct
+            // correctness-first computation from global memory.
             if constexpr (pipeline::REDUCTION_DIM_PER_WARP < 64) {
                 constexpr int RD = Globals::matvec_reduction_size;
                 if (kittens::laneid() < 16) {
@@ -94,10 +97,10 @@ template <typename Config, typename Globals> struct expert_downproj_fused {
                     for (int j = inst.start_reduction_col;
                          j < inst.start_reduction_col + RD;
                          j++) {
-                        float a = float(__ldcg(&g.expert_silu_out.raw_ptr[
-                                        expert_idx * C + j]));
-                        float w = float(__ldcg(&g.expert_down_weights.raw_ptr[
-                                        depth_off + row * C + j]));
+                        float a = float(g.expert_silu_out.raw_ptr[
+                                        expert_idx * C + j]);
+                        float w = float(g.expert_down_weights.raw_ptr[
+                                        depth_off + row * C + j]);
                         acc += a * w;
                     }
 
@@ -117,7 +120,6 @@ template <typename Config, typename Globals> struct expert_downproj_fused {
                 kittens::warp::sync();
                 return;
             }
-#endif
 
             kittens::rv_fl<16> output_rv;
             matvec_reduce<Config, kittens::sv_fl<16>, kittens::rv_fl<16>,

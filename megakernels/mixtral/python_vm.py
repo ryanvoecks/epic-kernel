@@ -214,7 +214,7 @@ def solve_oproj(globs: MixtralGlobals, ins: Mixtral_OProj):
         block_size=globs.o_proj_block_size,
         start_block_idx=ins.start_block_idx,
         end_block_idx=ins.end_block_idx,
-        reduction_size=globs.matvec_reduction_size,
+        reduction_size=globs.hidden_size,
         reduction_block_idx=ins.reduction_block_idx,
     )
 
