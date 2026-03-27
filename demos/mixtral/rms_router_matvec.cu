@@ -239,7 +239,6 @@ template <typename Config, typename Globals> struct rms_router_upgate {
                 s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
             }
             kittens::group<Config::NUM_CONSUMER_WARPS>::sync(3);
-            asm volatile("fence.acquire.gpu;\n" ::: "memory");
 
             // Wait for RMS norm weights
             kittens::wait(rms_weights_arrived(s), 0);
@@ -344,7 +343,6 @@ template <typename Config, typename Globals> struct rms_router_upgate {
 
             // All warps sync + fence so all warps see router outputs
             kittens::group<Config::NUM_CONSUMER_WARPS>::sync(4);
-            asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
 
             // Signal the loader that expert indices are ready
             if (kittens::warpid() == 0 && kittens::laneid() == 0) {
@@ -382,7 +380,6 @@ template <typename Config, typename Globals> struct rms_router_upgate {
                 kittens::tma::store_async_wait();
 
                 // Signal barrier: all upgate blocks done for both experts
-                asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
                 atomicAdd(&g.Bar[{inst.layer_idx, opcode - 1, 0}],
                           inst.num_blocks);
                 s.record(megakernel::TEVENT_DONE_GMEM_STORE);

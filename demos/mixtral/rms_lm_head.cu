@@ -33,7 +33,6 @@ template <typename Config, typename Globals> struct rms_lm_head {
                    EXPECTED_ARRIVAL_COUNT) {
                 __nanosleep(Config::GMEM_SPIN_LOOP_SLEEP_NANOS);
             }
-            asm volatile("fence.acquire.gpu;\n" ::: "memory");
         }
 
         template <int TW>
