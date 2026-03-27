@@ -23,11 +23,7 @@ using rms_router_upgate_op      = rms_router_upgate<config, mixtral_globals>;
 using expert_downproj_fused_op  = expert_downproj_fused<config, mixtral_globals>;
 using rms_lm_head_op            = rms_lm_head<config, mixtral_globals>;
 
-#ifdef MIXTRAL_SMALL_TEST
-PYBIND11_MODULE(mk_mixtral_small, m)
-#else
 PYBIND11_MODULE(mk_mixtral, m)
-#endif
 {
     m.doc() = "";
     kittens::py::bind_kernel<

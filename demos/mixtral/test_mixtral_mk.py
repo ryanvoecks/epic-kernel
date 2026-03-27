@@ -23,8 +23,8 @@ from megakernels.python_vm import PyVM_Interpreter
 from megakernels.scheduler import assign_to_sms, tensorize_instructions
 
 # ---------------------------------------------------------------------------
-# Small-test dimensions matching MIXTRAL_SMALL_TEST in mixtral.cuh.
-# Keeps GPU memory requirements to a few MB so tests run on a busy machine.
+# Small-test dimensions. Keeps GPU memory requirements to a few MB so tests
+# run on a busy machine.
 # ---------------------------------------------------------------------------
 NUM_LAYERS        = 2       # run 2 layers to test cross-layer dependency
 HIDDEN_DIM        = 512

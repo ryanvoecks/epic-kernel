@@ -94,44 +94,9 @@ template <typename Config, typename Globals> struct rms_qkv_rope_append {
 
             kittens::rv_fl<16> qkv_proj, rope_cos, rope_sin;
 
-#ifdef MIXTRAL_SMALL_TEST
-            // Correctness-first fallback for small-test dimensions.
-            // This avoids relying on the generic matvec scratch reduction path
-            // while debugging small-shape kernel parity.
-            float partial_sq_sum = 0.0f;
-            for (int i = kittens::laneid(); i < Globals::hidden_dim; i += 32) {
-                float h = static_cast<float>(g.hidden_states.raw_ptr[i]);
-                partial_sq_sum += h * h;
-            }
-
-            for (int offset = 16; offset > 0; offset >>= 1) {
-                partial_sq_sum +=
-                    __shfl_down_sync(MASK_ALL, partial_sq_sum, offset);
-            }
-            float full_sq_sum = __shfl_sync(MASK_ALL, partial_sq_sum, 0);
-            float rms = rsqrtf(full_sq_sum / static_cast<float>(Globals::hidden_dim) +
-                               g.rms_norm_eps);
-
-            if (kittens::laneid() < 16) {
-                int row = block_idx * 16 + kittens::laneid();
-                float acc = 0.0f;
-                int w_base = (inst.layer_idx * QKV_OUT_DIM + row) * Globals::hidden_dim;
-                int n_base = inst.layer_idx * Globals::hidden_dim;
-                for (int i = 0; i < Globals::hidden_dim; i++) {
-                    float h = static_cast<float>(g.hidden_states.raw_ptr[i]);
-                    float n = static_cast<float>(g.attn_norm_weights.raw_ptr[n_base + i]);
-                    float w = static_cast<float>(g.qkv_weights.raw_ptr[w_base + i]);
-                    acc += (h * rms * n) * w;
-                }
-                qkv_proj[0][0] = acc;
-            } else {
-                qkv_proj[0][0] = 0.0f;
-            }
-#else
             matvec_reduce<Config, kittens::sv_fl<16>, kittens::rv_fl<16>,
                           pipeline::SCRATCH_BYTES_PER_WARP>(
                 output_scratch_start, qkv_proj);
-#endif
 
             kittens::wait(rope_arrived(s), 0);
 

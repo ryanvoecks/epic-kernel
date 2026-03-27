@@ -18,25 +18,6 @@
 // ---------------------------------------------------------------------------
 // Architecture constants
 // ---------------------------------------------------------------------------
-#ifdef MIXTRAL_SMALL_TEST
-// Small-scale dimensions for memory-constrained correctness testing.
-// hidden=512, intermediate=1024, head_dim=64, 8 heads, 2 kv-heads,
-// 4 experts, 2 selected. matvec_reduction=gcd(1024,512)=512.
-// num_layers=1 matches the debug script's NUM_LAYERS=1 so that the lm_head
-// gmem_wait index (num_layers-1=0) aligns with the Python barriers tensor.
-#define MIXTRAL_NUM_LAYERS         1
-#define MIXTRAL_HIDDEN_DIM         512
-#define MIXTRAL_INTERMEDIATE_DIM   1024
-#define MIXTRAL_HEAD_DIM           64
-#define MIXTRAL_NUM_ATTN_HEADS     8
-#define MIXTRAL_NUM_KV_HEADS       2
-#define MIXTRAL_NUM_EXPERTS        4
-#define MIXTRAL_NUM_EXPERTS_TOK    2
-#define MIXTRAL_VOCAB_SIZE         256
-#define MIXTRAL_KV_BLOCK_SIZE      16
-#define MIXTRAL_MATVEC_BLOCK_SIZE  16
-#define MIXTRAL_MATVEC_REDUCTION   512
-#else
 #define MIXTRAL_NUM_LAYERS         32
 #define MIXTRAL_HIDDEN_DIM         4096
 #define MIXTRAL_INTERMEDIATE_DIM   14336
@@ -50,7 +31,6 @@
 #define MIXTRAL_MATVEC_BLOCK_SIZE  16
 // matvec_reduction_size = gcd(14336, 4096) = 512
 #define MIXTRAL_MATVEC_REDUCTION   512
-#endif
 #define B200_SM_COUNT              148
 
 constexpr int ATOMIC_ADD_START = megakernel::FREE_SLOTS_START;

@@ -20,7 +20,6 @@ mk_llama_3b:
 
 mk_mixtral:
 	$(MAKE) -C demos/mixtral mk_mixtral
-	$(MAKE) -C demos/mixtral mk_mixtral_small
 
 # Clean target
 clean:

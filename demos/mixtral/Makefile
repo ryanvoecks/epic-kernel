@@ -26,9 +26,5 @@ mk_mixtral: mixtral.cu
 	mkdir -p $(BUILD_DIR)
 	$(NVCC) mixtral.cu $(NVCC_FLAGS) -o $(BUILD_DIR)/mk_mixtral$(EXT_SUFFIX)
 
-mk_mixtral_small: mixtral.cu
-	mkdir -p $(BUILD_DIR)
-	$(NVCC) mixtral.cu $(NVCC_FLAGS) -DMIXTRAL_SMALL_TEST -o $(BUILD_DIR)/mk_mixtral_small$(EXT_SUFFIX)
-
 clean:
-	rm -f $(BUILD_DIR)/mk_mixtral$(EXT_SUFFIX) $(BUILD_DIR)/mk_mixtral_small$(EXT_SUFFIX)
+	rm -f $(BUILD_DIR)/mk_mixtral$(EXT_SUFFIX)
