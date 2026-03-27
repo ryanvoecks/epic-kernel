@@ -15,7 +15,8 @@
 //   reduction=1024  -> TILE_WIDTH=512, STAGE_PAGES=2, INPUT_PIPELINE_STAGES=6
 template <typename Config, typename Globals, typename parsed_instruction,
           typename pipeline_specifics,
-          int REDUCTION_DIM = Globals::hidden_dim>
+          int REDUCTION_DIM = Globals::hidden_dim,
+          int _PREFETCH_LOOKAHEAD = 0>
 struct matvec_pipeline {
     // Find smallest STAGE_PAGES (SP) that divides NUM_CONSUMER_WARPS,
     // divides REDUCTION_DIM, and whose tile width fits in a page.
@@ -40,6 +41,9 @@ struct matvec_pipeline {
     static constexpr int WEIGHTS_START_PAGE = 1;
     static constexpr int TOTAL_WEIGHT_PAGES =
         INPUT_PIPELINE_STAGES * STAGE_PAGES;
+    // Prefetch lookahead: -1 = INPUT_PIPELINE_STAGES, 0 = disabled, >0 = custom
+    static constexpr int PREFETCH_LOOKAHEAD =
+        (_PREFETCH_LOOKAHEAD < 0) ? INPUT_PIPELINE_STAGES : _PREFETCH_LOOKAHEAD;
 
     static_assert(STAGE_PAGES > 0,
                   "No valid STAGE_PAGES found for REDUCTION_DIM");
@@ -210,6 +214,22 @@ struct matvec_pipeline {
                         s, g, inst, iter, i, weight_chunk, sem);
                 }
 
+                // Prefetch future iteration's weights into L2 while
+                // loader blocks on weights_finished for the next iter.
+                if constexpr (PREFETCH_LOOKAHEAD > 0) {
+                    int prefetch_iter = iter + PREFETCH_LOOKAHEAD;
+                    if (prefetch_iter < inst.iters) {
+#pragma unroll
+                        for (int i = 0; i < STAGE_PAGES; i++) {
+                            auto &weight_chunk =
+                                reinterpret_cast<kittens::st_bf<16, TILE_WIDTH> &>(
+                                    s.pages[get_weight_page(s, input_stage, i)]);
+                            pipeline_specifics::prefetch_iter(
+                                s, g, inst, prefetch_iter, i, weight_chunk);
+                        }
+                    }
+                }
+
                 input_stage = (input_stage + 1) % INPUT_PIPELINE_STAGES;
             }
         } else if (kittens::laneid() >= needed_pages &&
@@ -319,12 +339,15 @@ struct matvec_pipeline {
 // rms_matvec_pipeline always reduces over full hidden_dim
 // (used by QKV, upgate, lm_head).
 template <typename Config, typename Globals, typename parsed_instruction,
-          typename pipeline_specifics, auto ActPtr, auto RmsPtr>
+          typename pipeline_specifics, auto ActPtr, auto RmsPtr,
+          int _PREFETCH_LOOKAHEAD = 0>
 struct rms_matvec_pipeline
     : public matvec_pipeline<Config, Globals, parsed_instruction,
-                             pipeline_specifics> {
+                             pipeline_specifics, Globals::hidden_dim,
+                             _PREFETCH_LOOKAHEAD> {
     using pipeline = matvec_pipeline<Config, Globals, parsed_instruction,
-                                     pipeline_specifics>;
+                                     pipeline_specifics, Globals::hidden_dim,
+                                     _PREFETCH_LOOKAHEAD>;
 
     static constexpr int REDUCTION_DIM_PER_WARP =
         Globals::hidden_dim / Config::NUM_CONSUMER_WARPS;

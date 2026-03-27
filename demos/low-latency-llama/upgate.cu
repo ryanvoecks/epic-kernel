@@ -55,6 +55,23 @@ template <typename Config, typename Globals> struct rms_upgate_silu {
             }
         }
 
+        template <int TW>
+        static __device__ inline void
+        prefetch_iter(megakernel::state<Config> &s, const Globals &g,
+                      parsed_instruction &inst, int iter, int col_idx,
+                      kittens::st_bf<16, TW> &weight_chunk) {
+            auto block_idx = inst.block_idxs[iter / 2];
+            if (iter % 2 == 0) {
+                kittens::tma::prefetch<dim::ROW, cache_policy::EVICT_FIRST>(
+                    weight_chunk, g.up_weights,
+                    {inst.layer_idx, block_idx, col_idx});
+            } else {
+                kittens::tma::prefetch<dim::ROW, cache_policy::EVICT_FIRST>(
+                    weight_chunk, g.gate_weights,
+                    {inst.layer_idx, block_idx, col_idx});
+            }
+        }
+
         static __device__ inline void store(megakernel::state<Config> &s,
                                             const Globals &g,
                                             parsed_instruction &inst,
@@ -124,7 +141,7 @@ template <typename Config, typename Globals> struct rms_upgate_silu {
     using pipeline =
         rms_matvec_pipeline<Config, Globals, parsed_instruction,
                             pipeline_specifics, &Globals::hidden_states,
-                            &Globals::mlp_norm_weights>;
+                            &Globals::mlp_norm_weights, 1>;
     static_assert(pipeline::OUTPUT_PIPELINE_STAGES == 3);
 
     struct controller {
