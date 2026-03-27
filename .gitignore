@@ -15,3 +15,11 @@ wandb
 *.pkl
 *.ptx
 *.so
+
+*.csv
+*.log
+*.ncu-rep
+*.ncu_tmp
+*.o
+*.txt
+!requirements*.txt
