@@ -64,16 +64,15 @@ STAGE_BUFFER_ATOL: dict[tuple[str, str], float] = {
     # At full scale, expert_silu_out magnitudes reach ~16000 where 1 bf16 ULP = 128.
     # Allow 4 ULPs of slack for multi-SM accumulation + bf16 rounding.
     ("rms_router_upgate", "expert_silu_out"): 512.0,
-    # Downproj accumulates 56 bfloat16 store_add_async ops per element (28 col
-    # splits × 2 experts) in non-deterministic SM order.  At full-scale magnitudes
-    # (~300K), bf16 ULP = 2048.  Non-deterministic ordering causes catastrophic
-    # cancellation when positive and negative partial sums nearly cancel, leading
-    # to errors up to ~1M.  This is an inherent limitation of bf16 atomic
-    # accumulation, not a code bug.  Tolerance set empirically.
-    ("downproj_fused", "hidden_states"):     2_000_000.0,
-    # The full-stage hidden_states check sees the same downproj bfloat16
-    # accumulation error (carried forward from the last layer's downproj).
-    ("full", "hidden_states"):               2_000_000.0,
+    # Downproj now reduces the full intermediate_dim in one instruction.
+    # Only 2 store_add_async per element (one per expert).  At full-scale
+    # magnitudes (~300K), bf16 ULP = 2048.  Allow 4 ULPs of slack.
+    # Downproj: 2 store_add_async per element (one per expert) + bf16 rounding
+    # from float32 accumulation. At magnitudes ~370K, bf16 ULP = 2048-4096.
+    # Allow ~5 ULPs.
+    ("downproj_fused", "hidden_states"):     16384.0,
+    # The full-stage hidden_states check sees the same downproj error.
+    ("full", "hidden_states"):               16384.0,
 }
 
 # Ordered list of testable stages

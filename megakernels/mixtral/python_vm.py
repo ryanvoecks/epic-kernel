@@ -49,9 +49,8 @@ def _expected_rms_router_upgate_barrier(globs: MixtralGlobals) -> int:
 
 def _expected_downproj_barrier(globs: MixtralGlobals) -> int:
     """Expected total DownProj increments for all active experts combined."""
-    num_col_splits = globs.intermediate_size // globs.matvec_reduction_size
     num_down_blocks = globs.hidden_size // globs.down_proj_block_size
-    return globs.num_experts_per_tok * num_col_splits * num_down_blocks
+    return globs.num_experts_per_tok * num_down_blocks
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +303,7 @@ def solve_expert_downproj_fused(globs: MixtralGlobals, ins: ExpertDownProjFused)
                 block_size=block_size,
                 block_idx=block_idx,
                 reduce=True,
-                reduction_size=globs.matvec_reduction_size,
+                reduction_size=globs.intermediate_size,
                 reduction_idx=ins.reduction_block_idx,
             )
             globs.hidden_states[start:end] += (score * out).to(globs.hidden_states.dtype)

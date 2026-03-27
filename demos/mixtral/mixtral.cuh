@@ -81,16 +81,19 @@ struct globals_t {
     constexpr static int matvec_block_size       = _matvec_block_size;
     constexpr static int matvec_reduction_size   = _matvec_reduction_size;
     constexpr static int sm_count                = _sm_count;
-    constexpr static int num_stages              = 3;
+    // KV attention pipeline stages.  With head_dim=128 each KV tile pair is
+    // 2 × st_bf<16,128> = 8192 bytes; 3 stages would need 24576 bytes but
+    // only one 16384-byte page is available.  Must be ≤ 2 for head_dim=128.
+    constexpr static int num_stages              = 2;
 
-    // For downproj each col-split covers matvec_reduction_size columns.
-    constexpr static int downproj_reduction_chunk_size = matvec_reduction_size;
+    // Downproj reduces over the full intermediate_dim in a single instruction.
+    constexpr static int downproj_reduction_chunk_size = intermediate_dim;
 
     // QKV waits for all ExpertDownProjFused blocks to finish:
-    //   num_experts_per_tok * (intermediate_dim/matvec_reduction_size) * (hidden_dim/matvec_block_size)
+    //   num_experts_per_tok * (intermediate_dim/downproj_reduction_chunk_size) * (hidden_dim/matvec_block_size)
     constexpr static int qkv_expected_arrivals =
         num_experts_per_tok *
-        (intermediate_dim / matvec_reduction_size) *
+        (intermediate_dim / downproj_reduction_chunk_size) *
         (hidden_dim / matvec_block_size);
 
     // ---------- layout types ----------

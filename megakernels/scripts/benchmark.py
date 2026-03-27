@@ -63,6 +63,10 @@ class ScriptConfig(pydra.Config):
         self.setting = "latency_3b"
         self.mk_dir = Path(__file__).parent.parent.parent / "build"
 
+    def mx(self):
+        self.model = "/data/models/of222/hub/models--mistralai--Mixtral-8x7B-Instruct-v0.1/snapshots/eba92302a2861cdc0098cc54bc9f17cb2c47eb61"
+        self.setting = "mixtral_latency"
+
 
 def run_benchmark(config, model, input_tokens, output_tokens):
     """Build schedule, create generator, run warmup + timed iters.
@@ -153,9 +157,15 @@ def main(config: ScriptConfig):
         max_len_override=config.max_len_override,
         max_batch_size=config.batch_size,
     )
-    model = LlamaForCausalLM.from_pretrained(
-        config.model, device=config.device, extra_config=extra_config
-    )
+    if config.setting == "mixtral_latency":
+        from megakernels.mixtral.model import MixtralForCausalLM
+        model = MixtralForCausalLM.from_pretrained(
+            config.model, device=config.device, extra_config=extra_config
+        )
+    else:
+        model = LlamaForCausalLM.from_pretrained(
+            config.model, device=config.device, extra_config=extra_config
+        )
 
     print(f"Input ids shape: (1, {config.input_tokens})")
 

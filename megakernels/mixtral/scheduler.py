@@ -197,23 +197,19 @@ def schedule_expert_downproj_fused(
 ) -> list[ExpertDownProjFused]:
     """Schedule fused DownProj for both selected experts.
 
-    Creates one instruction per col_idx (not per expert). Each instruction
-    handles both selected experts internally.
+    One instruction reduces over the full intermediate_dim.  Each instruction
+    handles both selected experts internally across all output blocks.
     """
     num_down_blocks = assert_div(globs.hidden_size, globs.down_proj_block_size)
-    num_col_splits = assert_div(globs.intermediate_size, globs.matvec_reduction_size)
 
-    instructions = []
-    for col_idx in range(num_col_splits):
-        instructions.append(
-            ExpertDownProjFused(
-                layer_idx=layer_idx,
-                start_block_idx=0,
-                end_block_idx=num_down_blocks,
-                reduction_block_idx=col_idx,
-            )
+    return [
+        ExpertDownProjFused(
+            layer_idx=layer_idx,
+            start_block_idx=0,
+            end_block_idx=num_down_blocks,
+            reduction_block_idx=0,
         )
-    return instructions
+    ]
 
 
 def schedule_lm_head(globs: MixtralGlobals) -> list[Mixtral_RMS_LM_Head]:
