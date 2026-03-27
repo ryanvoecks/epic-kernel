@@ -329,11 +329,19 @@ def solve_lm_head(globs: MixtralGlobals, ins: Mixtral_RMS_LM_Head):
         eps=globs.rms_norm_eps,
     )
 
+    reduction_dim = 2048
+    start_col = ins.reduction_block_idx * reduction_dim
+    end_col = start_col + reduction_dim
+
     block_size = globs.lm_head_block_size
     for block_idx in range(ins.start_output_block_idx, ins.end_output_block_idx):
         start, end = get_start_end(block_size, block_idx)
-        out = einsum(globs.lm_head_weights[start:end], post_ln, "o i, i -> o")
-        globs.logits[start:end] = out
+        partial = einsum(
+            globs.lm_head_weights[start:end, start_col:end_col],
+            post_ln[start_col:end_col],
+            "o i, i -> o",
+        )
+        globs.logits[start:end] += partial
 
 
 # ---------------------------------------------------------------------------

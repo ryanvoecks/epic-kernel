@@ -28,15 +28,41 @@ template <typename Config, typename Globals> struct rms_router_upgate {
     static constexpr int opcode = OPCODE_RmsRouterUpgate;
     static constexpr int EXPECTED_OPROJ_ARRIVALS = Globals::hidden_dim / Globals::matvec_block_size;
 
+    // Expert routing info stored in scratch memory (after output pipeline scratch).
+    // This avoids a global memory round-trip for expert indices within this SM.
+    static constexpr int EXPERT_SCRATCH_OFFSET =
+        3 /* OUTPUT_PIPELINE_STAGES */ * 16 * sizeof(float) * Config::NUM_CONSUMER_WARPS;
+    struct expert_routing_info {
+        int indices[Globals::num_experts_per_tok];
+    };
+    __device__ static inline expert_routing_info *
+    get_routing_info(megakernel::state<Config> &s) {
+        return reinterpret_cast<expert_routing_info *>(
+            (uint8_t *)s.scratch() + EXPERT_SCRATCH_OFFSET);
+    }
+
+    // Pipeline uses half of hidden_dim for REDUCTION_DIM to get 3-stage
+    // pipelining (STAGE_PAGES=4, INPUT_PIPELINE_STAGES=3) instead of 1-stage
+    // (STAGE_PAGES=8) when reducing over the full hidden_dim=4096.
+    static constexpr int REDUCTION_DIM = Globals::hidden_dim / 2;
+    static constexpr int INNER_TILES = Globals::hidden_dim / REDUCTION_DIM;
+
     struct parsed_instruction {
-        int layer_idx, start_block_idx, num_blocks, iters;
+        int layer_idx, start_block_idx, num_blocks;
+        // iters: total loader pipeline iterations (used by release_lid).
+        // iters == iters_outer * INNER_TILES.
+        int iters;
+        int iters_outer, loader_iters;
         __device__ inline parsed_instruction(
             typename Config::instruction_t &instr) {
             layer_idx       = instr[1];
             start_block_idx = instr[2];
             num_blocks      = instr[3];
             // gate + up interleaved x 2 experts
-            iters           = 2 * num_blocks * Globals::num_experts_per_tok;
+            iters           = 2 * num_blocks * Globals::num_experts_per_tok
+                              * INNER_TILES;
+            iters_outer     = 2 * num_blocks * Globals::num_experts_per_tok;
+            loader_iters    = iters;
         }
         __device__ inline parsed_instruction(megakernel::state<Config> &s)
             : parsed_instruction(s.instruction()) {}
@@ -52,30 +78,39 @@ template <typename Config, typename Globals> struct rms_router_upgate {
                   parsed_instruction &inst, int iter, int col_idx,
                   kittens::st_bf<16, TW> &weight_chunk,
                   kittens::semaphore &sem) {
-            // iter layout: for each expert_loop in [0, num_experts_per_tok):
+            // With inner tiling, iter is a flat loader iteration index:
+            //   outer_iter  = iter / INNER_TILES  (which up/gate x block x expert)
+            //   tile_batch  = iter % INNER_TILES  (which column half)
+            // outer_iter layout: for each expert_loop in [0, num_experts_per_tok):
             //   for each block in [0, num_blocks):
             //     even sub-iter: up weights
             //     odd sub-iter: gate weights
-            // Total iters = 2 * num_blocks * num_experts_per_tok
-            int expert_loop = iter / (2 * inst.num_blocks);
-            int within_expert = iter % (2 * inst.num_blocks);
+            int outer_iter = iter / INNER_TILES;
+            int tile_batch = iter % INNER_TILES;
+
+            int expert_loop = outer_iter / (2 * inst.num_blocks);
+            int within_expert = outer_iter % (2 * inst.num_blocks);
             int block_offset = within_expert / 2;
             int block_idx = inst.start_block_idx + block_offset;
 
-            // Get selected expert index at runtime
-            int expert_idx = g.selected_expert_indices.raw_ptr[expert_loop];
+            // Get selected expert index from scratch (written by consumer on this SM)
+            int expert_idx = get_routing_info(s)->indices[expert_loop];
             int depth = inst.layer_idx * Globals::num_experts + expert_idx;
+
+            // col_coord: tile_batch selects which REDUCTION_DIM-wide half,
+            // col_idx selects the page within that half.
+            int col_coord = tile_batch * pipeline::STAGE_PAGES + col_idx;
 
             if (within_expert % 2 == 0) {
                 // even: up weights
                 kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
                     weight_chunk, g.expert_up_weights,
-                    {0, depth, block_idx, col_idx}, sem);
+                    {0, depth, block_idx, col_coord}, sem);
             } else {
                 // odd: gate weights
                 kittens::tma::load_async<dim::ROW, cache_policy::EVICT_FIRST>(
                     weight_chunk, g.expert_gate_weights,
-                    {0, depth, block_idx, col_idx}, sem);
+                    {0, depth, block_idx, col_coord}, sem);
             }
         }
 
@@ -95,7 +130,7 @@ template <typename Config, typename Globals> struct rms_router_upgate {
             auto prev_output_stage = prev_output_idx % pipeline::OUTPUT_PIPELINE_STAGES;
 
             int block_idx = inst.start_block_idx + true_output_idx;
-            int expert_idx = g.selected_expert_indices.raw_ptr[expert_loop];
+            int expert_idx = get_routing_info(s)->indices[expert_loop];
 
             uint8_t *output_scratch_start =
                 pipeline::get_output_start(s, output_stage);
@@ -140,7 +175,7 @@ template <typename Config, typename Globals> struct rms_router_upgate {
     };
 
     using pipeline = matvec_pipeline<Config, Globals, parsed_instruction,
-                                     pipeline_specifics>;
+                                     pipeline_specifics, REDUCTION_DIM>;
 
     // Semaphore for RMS norm weights loaded by loader
     __device__ static inline kittens::semaphore &
@@ -200,8 +235,57 @@ template <typename Config, typename Globals> struct rms_router_upgate {
                 kittens::wait(router_done(s), 0);
             }
 
-            // Then run the standard matvec pipeline loader for weight pages
-            pipeline::loader_loop(s, g);
+            // Custom loader with inner-tile iteration.
+            // Total loader iterations = iters_outer * INNER_TILES.
+            // Each iteration loads STAGE_PAGES pages covering REDUCTION_DIM columns.
+            auto needed_pages =
+                1 + min(inst.loader_iters, pipeline::INPUT_PIPELINE_STAGES) *
+                    pipeline::STAGE_PAGES;
+
+            if (kittens::laneid() == 0) {
+                int input_stage = 0;
+
+                for (int iter = 0; iter < inst.loader_iters; iter++) {
+                    kittens::wait(
+                        pipeline::weights_finished(s, input_stage),
+                        (iter % (2 * pipeline::INPUT_PIPELINE_STAGES)) <
+                            pipeline::INPUT_PIPELINE_STAGES);
+
+                    auto &sem = pipeline::weights_arrived(s, input_stage);
+                    kittens::tma::expect_bytes(
+                        sem,
+                        sizeof(kittens::bf16) * REDUCTION_DIM * 16);
+
+#pragma unroll
+                    for (int i = 0; i < pipeline::STAGE_PAGES; i++) {
+                        int weight_page =
+                            pipeline::get_weight_page(s, input_stage, i);
+                        if (iter < pipeline::INPUT_PIPELINE_STAGES) {
+                            s.wait_page_ready(weight_page);
+                        }
+                        auto &weight_chunk =
+                            reinterpret_cast<kittens::st_bf<16, pipeline::TILE_WIDTH> &>(
+                                s.pages[weight_page]);
+
+                        if (iter == 0 && i == 0) {
+                            s.record(megakernel::TEVENT_FIRST_LOAD);
+                        } else if (iter == inst.loader_iters - 1 &&
+                                   i == pipeline::STAGE_PAGES - 1) {
+                            s.record(megakernel::TEVENT_LAST_LOAD);
+                        }
+
+                        pipeline_specifics::load_iter(
+                            s, g, inst, iter, i, weight_chunk, sem);
+                    }
+
+                    input_stage = (input_stage + 1) % pipeline::INPUT_PIPELINE_STAGES;
+                }
+            } else if (kittens::laneid() >= needed_pages &&
+                       kittens::laneid() < Config::NUM_PAGES) {
+                auto pid = s.pid(kittens::laneid());
+                s.wait_page_ready(pid);
+                s.finish_page(pid, Config::NUM_CONSUMER_WARPS);
+            }
         }
     };
 
@@ -239,7 +323,6 @@ template <typename Config, typename Globals> struct rms_router_upgate {
                 s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
             }
             kittens::group<Config::NUM_CONSUMER_WARPS>::sync(3);
-            asm volatile("fence.acquire.gpu;\n" ::: "memory");
 
             // Wait for RMS norm weights
             kittens::wait(rms_weights_arrived(s), 0);
@@ -335,6 +418,11 @@ template <typename Config, typename Globals> struct rms_router_upgate {
                     }
 
                     float top2_sum = probs[idx0] + probs[idx1];
+                    // Write to scratch for loader/storer on this SM
+                    auto *routing = get_routing_info(s);
+                    routing->indices[0] = idx0;
+                    routing->indices[1] = idx1;
+                    // Write to gmem for cross-SM consumers (expert_downproj_fused)
                     g.selected_expert_indices.raw_ptr[0] = idx0;
                     g.selected_expert_indices.raw_ptr[1] = idx1;
                     g.selected_expert_scores.raw_ptr[0] = __float2bfloat16(probs[idx0] / top2_sum);
@@ -344,45 +432,167 @@ template <typename Config, typename Globals> struct rms_router_upgate {
 
             // All warps sync + fence so all warps see router outputs
             kittens::group<Config::NUM_CONSUMER_WARPS>::sync(4);
-            asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
 
             // Signal the loader that expert indices are ready
             if (kittens::warpid() == 0 && kittens::laneid() == 0) {
                 arrive(router_done(s));
             }
 
-            // Release activation page and reload normed activations for pipeline
+            // Release activation page — the full path reloads activations
+            // per inner tile from router_normed_hidden via the activation page.
             s.warp_finish_page(activation_page, 1);
 
-            sv_t &act_smem_pipe = reinterpret_cast<sv_t *>(
-                &pipeline::get_activations(s))[kittens::warpid()];
+            // ---- Phase 2: Inner-tile UpGate pipeline ----
+            // Outer loop: iters_outer = 2 * num_blocks * num_experts_per_tok
+            //   (up/gate interleaved, same as before)
+            // Inner loop: INNER_TILES tile-batches of REDUCTION_DIM columns.
+            //   Each inner tile loads REDUCTION_DIM columns of weights and
+            //   the corresponding activation slice, does matvec, accumulates.
+            // After inner loop: writes accumulated result to output scratch.
+            // Storer applies SiLU fusion on odd outer iters (unchanged).
+            constexpr int RDPW = pipeline::REDUCTION_DIM_PER_WARP;
+            constexpr int WARPS_PER_PAGE =
+                Config::NUM_CONSUMER_WARPS / pipeline::STAGE_PAGES;
+            const int page_index = kittens::warpid() / WARPS_PER_PAGE;
 
-            kittens::warp::load(act_smem_pipe, g.router_normed_hidden,
-                                kittens::coord<>{kittens::warpid() * pipeline::REDUCTION_DIM_PER_WARP});
-            kittens::warp::sync();
+            int input_stage = 0, output_stage = 0;
 
-            rv_t act_vec_pipe;
-            kittens::warp::load(act_vec_pipe, act_smem_pipe);
-            kittens::warp::sync();
+            for (int outer = 0; outer < inst.iters_outer; outer++) {
+                kittens::rv_fl<16> warp_acc;
+                kittens::warp::zero(warp_acc);
 
-            // ---- Phase 2: UpGate pipeline ----
-            pipeline::consumer_loop(s, g, act_vec_pipe);
+                kittens::sv_fl<16> &warp_scratch =
+                    *reinterpret_cast<kittens::sv_fl<16> *>(
+                        pipeline::get_output_start(s, output_stage) +
+                        (kittens::warpid() * pipeline::SCRATCH_BYTES_PER_WARP));
+
+                for (int t = 0; t < INNER_TILES; t++) {
+                    int iter = outer * INNER_TILES + t;
+
+                    // Wait for weight pages
+                    kittens::wait(
+                        pipeline::weights_arrived(s, input_stage),
+                        (iter % (2 * pipeline::INPUT_PIPELINE_STAGES)) >=
+                            pipeline::INPUT_PIPELINE_STAGES);
+
+                    // Wait for output scratch free (first inner tile only)
+                    if (t == 0) {
+                        kittens::wait(
+                            pipeline::outputs_finished(s, output_stage),
+                            (outer % (2 * pipeline::OUTPUT_PIPELINE_STAGES)) <
+                                pipeline::OUTPUT_PIPELINE_STAGES);
+                    }
+
+                    // Get weight subtile for this warp
+                    int weight_page =
+                        pipeline::get_weight_page(s, input_stage, page_index);
+                    kittens::st_bf<16, RDPW> &weights =
+                        reinterpret_cast<kittens::st_bf<16, RDPW> *>(
+                            s.pages[weight_page].ptr())
+                            [kittens::warpid() % WARPS_PER_PAGE];
+
+                    // Load activation slice for this tile-batch from gmem
+                    // via the activation page (shared memory).
+                    int act_col = t * REDUCTION_DIM + kittens::warpid() * RDPW;
+                    kittens::rv_fl<RDPW> act_vec;
+                    {
+                        int act_page = pipeline::get_activation_page(s);
+                        kittens::sv_bf<RDPW> &act_smem =
+                            reinterpret_cast<kittens::sv_bf<RDPW> *>(
+                                s.pages[act_page].ptr())[kittens::warpid()];
+                        kittens::warp::load(
+                            act_smem, g.router_normed_hidden,
+                            kittens::coord<>{act_col});
+                        kittens::warp::sync();
+                        kittens::warp::load(act_vec, act_smem);
+                        kittens::warp::sync();
+                    }
+
+                    if (outer == 0 && t == 0) {
+                        s.record(megakernel::TEVENT_FIRST_USE);
+                    }
+
+                    // Matvec and accumulate
+                    matvec(warp_scratch, weights, act_vec);
+
+                    kittens::rv_fl<16> tile_partial;
+                    kittens::warp::load(tile_partial, warp_scratch);
+                    kittens::warp::add(warp_acc, warp_acc, tile_partial);
+
+                    // Signal that we are done with this weight stage
+                    kittens::warp::arrive(
+                        pipeline::weights_finished(s, input_stage));
+
+                    // Release weight pages in drain phase
+                    if (iter >= inst.loader_iters -
+                                    pipeline::INPUT_PIPELINE_STAGES) {
+#pragma unroll
+                        for (int j = 0; j < pipeline::STAGE_PAGES; j++) {
+                            s.warp_finish_page(
+                                pipeline::get_weight_page(s, input_stage, j),
+                                1);
+                        }
+                    }
+
+                    input_stage =
+                        (input_stage + 1) % pipeline::INPUT_PIPELINE_STAGES;
+                }  // end inner tile loop
+
+                if (outer == inst.iters_outer - 1) {
+                    s.record(megakernel::TEVENT_LAST_USE);
+                }
+
+                // Write accumulated result to scratch for the storer.
+                kittens::warp::store(warp_scratch, warp_acc);
+                kittens::warp::sync();
+
+                // All warps signal that outputs have arrived for this block.
+                kittens::warp::arrive(
+                    pipeline::outputs_arrived(s, output_stage));
+
+                output_stage =
+                    (output_stage + 1) % pipeline::OUTPUT_PIPELINE_STAGES;
+            }  // end outer loop
         }
     };
 
     struct storer {
         static __device__ void run(const Globals &g,
                                    megakernel::state<Config> &s) {
-            pipeline::storer_loop<2>(s, g);
-            kittens::warp::sync();
+            // Custom storer iterating over iters_outer.
+            // The store function is called with outer iteration index;
+            // SiLU fusion on odd iters remains unchanged.
+            parsed_instruction inst{s};
+            int output_stage = 0;
 
             if (kittens::laneid() == 0) {
-                parsed_instruction inst{s};
                 s.record(megakernel::TEVENT_AT_GMEM_STORE);
-                kittens::tma::store_async_wait();
+            }
 
-                // Signal barrier: all upgate blocks done for both experts
-                asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
+            for (int outer = 0; outer < inst.iters_outer; outer++) {
+                auto &sem = pipeline::outputs_arrived(s, output_stage);
+                bool bit = (outer % (2 * pipeline::OUTPUT_PIPELINE_STAGES)) >=
+                           pipeline::OUTPUT_PIPELINE_STAGES;
+                kittens::wait(sem, bit);
+
+                if (outer == 0) {
+                    s.record(megakernel::TEVENT_FIRST_STORE);
+                } else if (outer == inst.iters_outer - 1) {
+                    s.record(megakernel::TEVENT_LAST_STORE);
+                }
+
+                pipeline_specifics::store(s, g, inst, outer, output_stage);
+
+                kittens::warp::arrive(
+                    pipeline::outputs_finished(s, output_stage));
+
+                output_stage =
+                    (output_stage + 1) % pipeline::OUTPUT_PIPELINE_STAGES;
+            }
+
+            kittens::warp::sync();
+            if (kittens::laneid() == 0) {
+                kittens::tma::store_async_wait();
                 atomicAdd(&g.Bar[{inst.layer_idx, opcode - 1, 0}],
                           inst.num_blocks);
                 s.record(megakernel::TEVENT_DONE_GMEM_STORE);

@@ -131,6 +131,9 @@ class MK_Generator(Generator):
 
         self.fill()
         self.schedule.globs.pos_id = pos_id
+        # Zero logits before each forward pass — required when LM head uses
+        # store_add_async for partial column reductions.
+        self.schedule.globs.logits.zero_()
         if not self.skip_mk:
             self.interpreter.interpret(self.schedule.globs)
 

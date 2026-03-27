@@ -342,7 +342,6 @@ template <typename Config, typename Globals> struct expert_downproj_fused {
                 s.record(megakernel::TEVENT_DONE_GMEM_WAIT);
             }
             kittens::group<Config::NUM_CONSUMER_WARPS>::sync(4);
-            asm volatile("fence.acquire.gpu;\n" ::: "memory");
 
             // Acquire and immediately release the activation page — the full path
             // never loads anything into it, but we must wait_page_ready before
@@ -546,7 +545,6 @@ template <typename Config, typename Globals> struct expert_downproj_fused {
                 kittens::tma::store_async_wait();
                 // Release fence: all TMA writes must be globally visible
                 // before downstream SMs see the barrier increment.
-                asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
                 atomicAdd(&g.Bar[{inst.layer_idx, opcode - 1, 0}],
                           inst.iters_outer);
                 s.record(megakernel::TEVENT_DONE_GMEM_STORE);
