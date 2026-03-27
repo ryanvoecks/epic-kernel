@@ -197,43 +197,27 @@ def schedule_expert_downproj_fused(
 ) -> list[ExpertDownProjFused]:
     """Schedule fused DownProj for both selected experts across all SMs.
 
-    Splits work along output blocks and reduction columns, distributing
-    (col_idx, output_block_idx) jobs evenly across SMs.
+    Distributes output blocks evenly across SMs.  Each instruction handles
+    the full reduction over intermediate_dim (the CUDA kernel always streams
+    all INNER_TILES tile-batches and does not support partial-column reduction).
     """
     num_down_blocks = assert_div(globs.hidden_size, globs.down_proj_block_size)
-    num_col_splits = assert_div(globs.intermediate_size, globs.matvec_reduction_size)
     sm_count = globs.sm_count()
-
-    jobs = []
-    for col_idx in range(num_col_splits):
-        for down_block_idx in range(num_down_blocks):
-            jobs.append((col_idx, down_block_idx))
+    effective_sms = min(sm_count, num_down_blocks)
+    blocks_per_sm = num_down_blocks / effective_sms
 
     instructions = []
-    num_assigned_jobs = 0
-    for sm_idx in range(sm_count):
-        jobs_left = len(jobs) - num_assigned_jobs
-        sms_left = sm_count - sm_idx
-        jobs_per_sm = jobs_left / sms_left
-
-        jobs_for_this_sm = round(jobs_per_sm)
-        raw_sliced_jobs = jobs[num_assigned_jobs : num_assigned_jobs + jobs_for_this_sm]
-
-        col_idx = raw_sliced_jobs[0][0]
-        sliced_jobs = [job for job in raw_sliced_jobs if job[0] == col_idx]
-
-        start_block = sliced_jobs[0][1]
+    for sm_idx in range(effective_sms):
+        start = round(sm_idx * blocks_per_sm)
+        end = round((sm_idx + 1) * blocks_per_sm)
         instructions.append(
             ExpertDownProjFused(
                 layer_idx=layer_idx,
-                start_block_idx=start_block,
-                end_block_idx=start_block + len(sliced_jobs),
-                reduction_block_idx=col_idx,
+                start_block_idx=start,
+                end_block_idx=end,
+                reduction_block_idx=0,
             )
         )
-
-        num_assigned_jobs += len(sliced_jobs)
-
     return instructions
 
 
