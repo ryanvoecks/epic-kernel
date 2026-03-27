@@ -50,7 +50,8 @@ def _expected_rms_router_upgate_barrier(globs: MixtralGlobals) -> int:
 def _expected_downproj_barrier(globs: MixtralGlobals) -> int:
     """Expected total DownProj increments for all active experts combined."""
     num_down_blocks = globs.hidden_size // globs.down_proj_block_size
-    return globs.num_experts_per_tok * num_down_blocks
+    num_col_splits = globs.intermediate_size // globs.matvec_reduction_size
+    return num_col_splits * num_down_blocks * globs.num_experts_per_tok
 
 
 # ---------------------------------------------------------------------------
