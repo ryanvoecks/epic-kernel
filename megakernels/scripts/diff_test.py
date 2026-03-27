@@ -14,6 +14,7 @@ from megakernels.dispatch import (
 )
 from megakernels.utils import get_free_gpu
 from megakernels.llama import ExtraModelConfig, LlamaForCausalLM
+from megakernels.mixtral.model import MixtralForCausalLM
 from megakernels.scheduler import (
     assign_to_sms,
     tensorize_instructions,
@@ -68,6 +69,11 @@ class ScriptConfig(pydra.Config):
     def l8(self):
         self.model = "meta-llama/Llama-3.1-8B-Instruct"
 
+    def mixtral(self):
+        self.setting = "mixtral_latency"
+        self.model = "/data/models/of222/hub/models--mistralai--Mixtral-8x7B-Instruct-v0.1/snapshots/eba92302a2861cdc0098cc54bc9f17cb2c47eb61"
+        self.interleave_rope = False
+
 
 def main(config: ScriptConfig):
     if config.device is None:
@@ -83,9 +89,14 @@ def main(config: ScriptConfig):
         max_batch_size=config.batch_size,
     )
 
-    model = LlamaForCausalLM.from_pretrained(
-        config.model, extra_config=extra_config, device=config.device
-    )
+    if config.setting == "mixtral_latency":
+        model = MixtralForCausalLM.from_pretrained(
+            config.model, extra_config=extra_config, device=config.device
+        )
+    else:
+        model = LlamaForCausalLM.from_pretrained(
+            config.model, extra_config=extra_config, device=config.device
+        )
 
     builder = make_schedule_builder(config.setting)
     mk_interpreter = make_mk_interpreter(config.setting, config.mk_dir)
