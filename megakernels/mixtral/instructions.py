@@ -249,6 +249,7 @@ class ExpertDownProjFused(Instruction):
 class Mixtral_RMS_LM_Head(Instruction):
     start_output_block_idx: int
     end_output_block_idx: int
+    reduction_block_idx: int = 0
 
     @classmethod
     def opcode(cls) -> int:

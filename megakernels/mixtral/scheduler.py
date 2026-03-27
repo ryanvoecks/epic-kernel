@@ -223,17 +223,23 @@ def schedule_expert_downproj_fused(
 
 def schedule_lm_head(globs: MixtralGlobals) -> list[Mixtral_RMS_LM_Head]:
     num_logit_blocks = assert_div(globs.vocab_size, globs.lm_head_block_size)
+    num_col_splits = globs.hidden_size // 2048
     sm_count = globs.sm_count()
     effective_sms = min(sm_count, num_logit_blocks)
     blocks_per_sm = num_logit_blocks / effective_sms
 
     instructions = []
-    for sm_idx in range(effective_sms):
-        start = round(sm_idx * blocks_per_sm)
-        end = round((sm_idx + 1) * blocks_per_sm)
-        instructions.append(
-            Mixtral_RMS_LM_Head(start_output_block_idx=start, end_output_block_idx=end)
-        )
+    for reduction_block_idx in range(num_col_splits):
+        for sm_idx in range(effective_sms):
+            start = round(sm_idx * blocks_per_sm)
+            end = round((sm_idx + 1) * blocks_per_sm)
+            instructions.append(
+                Mixtral_RMS_LM_Head(
+                    start_output_block_idx=start,
+                    end_output_block_idx=end,
+                    reduction_block_idx=reduction_block_idx,
+                )
+            )
     return instructions
 
 
