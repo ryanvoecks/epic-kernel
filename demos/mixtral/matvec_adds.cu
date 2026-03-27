@@ -63,46 +63,6 @@ struct MatVecAddOp {
             kittens::sv_bf<16> &output_smem_bf =
                 *reinterpret_cast<kittens::sv_bf<16> *>(output_scratch_start);
 
-#ifdef MIXTRAL_SMALL_TEST
-            // When REDUCTION_DIM_PER_WARP < 64, the reinterpreted subtile type
-            // st_bf<16, RDPW> has swizzle_bytes=64 while the loaded page tile
-            // st_bf<16, TILE_WIDTH> has swizzle_bytes=128.  This mismatch causes
-            // every consumer warp to read the wrong weight columns, producing
-            // garbage partial sums.  Bypass with a direct correctness-first
-            // computation from global memory instead.
-            if constexpr (pipeline::REDUCTION_DIM_PER_WARP < 64) {
-                kittens::rv_fl<16> output_rv;
-                const auto &w_gl  = g.*WeightsPtr;
-                const auto &in_gl = g.*InputActivationsPtr;
-                int start_col = inst.start_reduction_col;
-                int row_base  = block_idx * Globals::matvec_block_size;
-                if (kittens::laneid() < Globals::matvec_block_size) {
-                    int row = row_base + kittens::laneid();
-                    float acc = 0.0f;
-                    for (int j = 0; j < REDUCTION_DIM; j++) {
-                        float w = float(w_gl.raw_ptr[
-                            ((int)inst.layer * (int)w_gl.rows() + row) *
-                                (int)w_gl.cols() + start_col + j]);
-                        float a = float(in_gl.raw_ptr[start_col + j]);
-                        acc += w * a;
-                    }
-                    output_rv[0][0] = acc;
-                } else {
-                    output_rv[0][0] = 0.0f;
-                }
-                kittens::warp::sync();
-                kittens::warp::store(output_smem_bf, output_rv);
-                kittens::warp::sync();
-                if (kittens::warp::laneid() == 0) {
-                    kittens::tma::store_add_async<cache_policy::EVICT_LAST>(
-                        g.*OutputActivationsPtr, output_smem_bf, {block_idx});
-                    kittens::tma::store_async_read_wait();
-                }
-                kittens::warp::sync();
-                return;
-            }
-#endif
-
             kittens::rv_fl<16> output_rv;
             matvec_reduce<Config, kittens::sv_fl<16>, kittens::rv_fl<16>,
                           pipeline::SCRATCH_BYTES_PER_WARP>(

@@ -105,41 +105,6 @@ template <typename Config, typename Globals> struct rms_router_upgate {
             kittens::sv_bf<16> &out_smem =
                 *reinterpret_cast<kittens::sv_bf<16> *>(output_scratch_start);
 
-#ifdef MIXTRAL_SMALL_TEST
-            if constexpr (pipeline::REDUCTION_DIM_PER_WARP < 64) {
-                if (kittens::laneid() < 16) {
-                    int lane = kittens::laneid();
-                    size_t row      = (size_t)block_idx * 16 + lane;
-                    size_t C        = Globals::hidden_dim;
-                    size_t R        = Globals::intermediate_dim;
-                    int depth       = inst.layer_idx * Globals::num_experts + expert_idx;
-                    size_t depth_off = (size_t)depth * R * C;
-
-                    float up_acc = 0.f, gate_acc = 0.f;
-                    for (int j = 0; j < (int)Globals::hidden_dim; j++) {
-                        float a  = float(__ldcg(&g.router_normed_hidden.raw_ptr[j]));
-                        up_acc   += a * float(__ldcg(&g.expert_up_weights.raw_ptr[depth_off + row * C + j]));
-                        gate_acc += a * float(__ldcg(&g.expert_gate_weights.raw_ptr[depth_off + row * C + j]));
-                    }
-                    float silu_gate = gate_acc / (1.f + __expf(-gate_acc));
-                    float result    = silu_gate * up_acc;
-
-                    out_smem[lane] = __float2bfloat16(result);
-                }
-                kittens::warp::sync();
-
-                if (kittens::laneid() == 0) {
-                    s.record(megakernel::TEVENT_OUTPUT_READY);
-                    kittens::tma::store_async<cache_policy::EVICT_LAST>(
-                        g.expert_silu_out, out_smem,
-                        {0, 0, expert_idx, block_idx});
-                    kittens::tma::store_async_read_wait();
-                }
-                kittens::warp::sync();
-                return;
-            }
-#endif
-
             kittens::rv_fl<16> up_out, gate_out, gate_scratch;
 
             matvec_reduce<Config, kittens::sv_fl<16>, kittens::rv_fl<16>,
@@ -281,103 +246,6 @@ template <typename Config, typename Globals> struct rms_router_upgate {
 
             int activation_page = pipeline::get_activation_page(s);
 
-#ifdef MIXTRAL_SMALL_TEST
-            // Correctness-first path for small test
-            s.warp_finish_page(activation_page, 1);
-
-            if (kittens::warpid() == 0) {
-                int lane = kittens::laneid();
-
-                // RMS norm from GMEM
-                float sq_sum = 0.f;
-                for (int i = lane; i < Globals::hidden_dim; i += 32) {
-                    float v = float(g.hidden_states.raw_ptr[i]);
-                    sq_sum += v * v;
-                }
-                for (int mask = 16; mask >= 1; mask >>= 1)
-                    sq_sum += __shfl_xor_sync(0xffffffff, sq_sum, mask);
-
-                float rms_scale = rsqrtf(sq_sum / float(Globals::hidden_dim) + g.rms_norm_eps);
-
-                // Apply RMS norm and write to router_normed_hidden
-                for (int i = lane; i < Globals::hidden_dim; i += 32) {
-                    float v = float(g.hidden_states.raw_ptr[i]);
-                    float w = float(g.ffn_ln_weights.raw_ptr[
-                        (size_t)inst.layer_idx * Globals::hidden_dim + i]);
-                    g.router_normed_hidden.raw_ptr[i] = __float2bfloat16(v * rms_scale * w);
-                }
-                kittens::warp::sync();
-
-                // Router: 8 dot products
-                float logits[Globals::num_experts];
-                for (int e = 0; e < Globals::num_experts; e++) {
-                    float dot = 0.f;
-                    int row_base = (inst.layer_idx * Globals::num_experts + e) *
-                                   Globals::hidden_dim;
-                    for (int i = lane; i < Globals::hidden_dim; i += 32) {
-                        float nv = float(g.router_normed_hidden.raw_ptr[i]);
-                        float wv = float(g.router_weights.raw_ptr[row_base + i]);
-                        dot += nv * wv;
-                    }
-                    for (int mask = 16; mask >= 1; mask >>= 1)
-                        dot += __shfl_xor_sync(0xffffffff, dot, mask);
-                    logits[e] = dot;
-                }
-
-                // Softmax + top-2
-                if (lane == 0) {
-                    float max_val = logits[0];
-                    for (int e = 1; e < Globals::num_experts; e++)
-                        max_val = fmaxf(max_val, logits[e]);
-                    float sum_exp = 0.f;
-                    float probs[Globals::num_experts];
-                    for (int e = 0; e < Globals::num_experts; e++) {
-                        probs[e] = __expf(logits[e] - max_val);
-                        sum_exp += probs[e];
-                    }
-                    for (int e = 0; e < Globals::num_experts; e++)
-                        probs[e] /= sum_exp;
-
-                    int idx0 = 0, idx1 = 1;
-                    if (probs[idx1] > probs[idx0]) { int tmp = idx0; idx0 = idx1; idx1 = tmp; }
-                    for (int e = 2; e < Globals::num_experts; e++) {
-                        if (probs[e] > probs[idx0]) { idx1 = idx0; idx0 = e; }
-                        else if (probs[e] > probs[idx1]) { idx1 = e; }
-                    }
-
-                    float top2_sum = probs[idx0] + probs[idx1];
-                    g.selected_expert_indices.raw_ptr[0] = idx0;
-                    g.selected_expert_indices.raw_ptr[1] = idx1;
-                    g.selected_expert_scores.raw_ptr[0] = __float2bfloat16(probs[idx0] / top2_sum);
-                    g.selected_expert_scores.raw_ptr[1] = __float2bfloat16(probs[idx1] / top2_sum);
-                }
-                kittens::warp::sync();
-            }
-
-            // All warps sync to see router outputs
-            kittens::group<Config::NUM_CONSUMER_WARPS>::sync(4);
-            asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
-
-            // Signal the loader that expert indices are ready
-            if (kittens::warpid() == 0 && kittens::laneid() == 0) {
-                arrive(router_done(s));
-            }
-
-            // ---- Phase 2: UpGate pipeline (SMALL_TEST path) ----
-            // Load activations from router_normed_hidden
-            sv_t &activations_smem = reinterpret_cast<sv_t *>(
-                &pipeline::get_activations(s))[kittens::warpid()];
-
-            kittens::warp::load(activations_smem, g.router_normed_hidden,
-                                kittens::coord<>{kittens::warpid() * pipeline::REDUCTION_DIM_PER_WARP});
-            kittens::warp::sync();
-
-            rv_t activations_vec;
-            kittens::warp::load(activations_vec, activations_smem);
-            kittens::warp::sync();
-
-            pipeline::consumer_loop(s, g, activations_vec);
-#else
             // Full-size path: RMS norm using SMEM pipeline
             constexpr int CHUNK = Globals::hidden_dim / Config::NUM_CONSUMER_WARPS;
             using sv_chunk = kittens::sv_bf<CHUNK>;
@@ -499,7 +367,6 @@ template <typename Config, typename Globals> struct rms_router_upgate {
 
             // ---- Phase 2: UpGate pipeline ----
             pipeline::consumer_loop(s, g, act_vec_pipe);
-#endif
         }
     };
 

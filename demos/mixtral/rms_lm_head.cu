@@ -59,52 +59,6 @@ template <typename Config, typename Globals> struct rms_lm_head {
             kittens::sv_bf<16> &logits_smem_bf =
                 *reinterpret_cast<kittens::sv_bf<16> *>(output_scratch_start);
 
-#ifdef MIXTRAL_SMALL_TEST
-            // When REDUCTION_DIM_PER_WARP < 64, the reinterpreted subtile type
-            // st_bf<16, RDPW> has a different swizzle pattern than the TMA-loaded
-            // tile, so the partial sums in scratch memory are garbage.  Bypass by
-            // recomputing RMS norm + lm_head matvec directly from global memory.
-            if constexpr (pipeline::REDUCTION_DIM_PER_WARP < 64) {
-                constexpr int HD = Globals::hidden_dim;
-
-                if (kittens::laneid() < 16) {
-                    int lane = kittens::laneid();
-                    int row  = block_idx * 16 + lane; // logit token row
-
-                    // Step 1: compute RMS norm of hidden_states in float32
-                    float sq_sum = 0.f;
-                    for (int j = 0; j < HD; j++) {
-                        float h = float(__ldcg(&g.hidden_states.raw_ptr[j]));
-                        sq_sum += h * h;
-                    }
-                    float rms_scale = rsqrtf(sq_sum / float(HD) + g.rms_norm_eps);
-
-                    // Step 2: dot product of rms-normed hidden with lm_head weight row
-                    float acc = 0.f;
-                    for (int j = 0; j < HD; j++) {
-                        float h = float(__ldcg(&g.hidden_states.raw_ptr[j]));
-                        float n = float(__ldcg(
-                            &g.lm_head_norm_weights.raw_ptr[j]));
-                        float w = float(__ldcg(
-                            &g.lm_head_weights.raw_ptr[row * HD + j]));
-                        acc += (h * rms_scale * n) * w;
-                    }
-
-                    logits_smem_bf[lane] = __float2bfloat16(acc);
-                }
-                kittens::warp::sync();
-
-                if (kittens::laneid() == 0) {
-                    s.record(megakernel::TEVENT_OUTPUT_READY);
-                    kittens::tma::store_async<cache_policy::EVICT_LAST>(
-                        g.logits, logits_smem_bf, {0, 0, 0, block_idx});
-                    kittens::tma::store_async_read_wait();
-                }
-                kittens::warp::sync();
-                return;
-            }
-#endif
-
             kittens::rv_fl<16> logits_rv;
             matvec_reduce<Config, kittens::sv_fl<16>, kittens::rv_fl<16>,
                           pipeline::SCRATCH_BYTES_PER_WARP>(

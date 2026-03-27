@@ -451,7 +451,7 @@ def main():
         print("  Module loaded OK")
     except Exception as e:
         print(f"{RED}ERROR{RESET}: Failed to import {MK_MODULE_NAME}: {e}")
-        print("  Build with: cd demos/mixtral && make (with MIXTRAL_SMALL_TEST defined)")
+        print("  Build with: cd demos/mixtral && make")
         sys.exit(1)
 
     stages = ALL_STAGES if args.stage == "all" else [args.stage]
