@@ -102,6 +102,9 @@ CYAN = "#00FFFF"
 
 MAPPING = {
     0: ("controller_start", START_SYMBOL, "green"),
+    1: ("ifetch_done", END_SYMBOL, "#90EE90"),       # TEVENT_IFETCH_DONE
+    2: ("page_alloc_done", END_SYMBOL, "#00FF7F"),    # TEVENT_PAGE_ALLOC_DONE
+    3: ("sems_setup", END_SYMBOL, "#32CD32"),         # TEVENT_SEMS_SETUP
     4: ("controller_end", END_SYMBOL, "green"),
     5: ("loader_start", START_SYMBOL, "orange"),
     6: ("loader_end", END_SYMBOL, "orange"),

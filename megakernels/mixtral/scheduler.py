@@ -195,21 +195,46 @@ def schedule_rms_router_upgate(globs: MixtralGlobals, layer_idx: int) -> list[Rm
 def schedule_expert_downproj_fused(
     globs: MixtralGlobals, layer_idx: int
 ) -> list[ExpertDownProjFused]:
-    """Schedule fused DownProj for both selected experts.
+    """Schedule fused DownProj for both selected experts across all SMs.
 
-    One instruction reduces over the full intermediate_dim.  Each instruction
-    handles both selected experts internally across all output blocks.
+    Splits work along output blocks and reduction columns, distributing
+    (col_idx, output_block_idx) jobs evenly across SMs.
     """
     num_down_blocks = assert_div(globs.hidden_size, globs.down_proj_block_size)
+    num_col_splits = assert_div(globs.intermediate_size, globs.matvec_reduction_size)
+    sm_count = globs.sm_count()
 
-    return [
-        ExpertDownProjFused(
-            layer_idx=layer_idx,
-            start_block_idx=0,
-            end_block_idx=num_down_blocks,
-            reduction_block_idx=0,
+    jobs = []
+    for col_idx in range(num_col_splits):
+        for down_block_idx in range(num_down_blocks):
+            jobs.append((col_idx, down_block_idx))
+
+    instructions = []
+    num_assigned_jobs = 0
+    for sm_idx in range(sm_count):
+        jobs_left = len(jobs) - num_assigned_jobs
+        sms_left = sm_count - sm_idx
+        jobs_per_sm = jobs_left / sms_left
+
+        jobs_for_this_sm = round(jobs_per_sm)
+        raw_sliced_jobs = jobs[num_assigned_jobs : num_assigned_jobs + jobs_for_this_sm]
+
+        col_idx = raw_sliced_jobs[0][0]
+        sliced_jobs = [job for job in raw_sliced_jobs if job[0] == col_idx]
+
+        start_block = sliced_jobs[0][1]
+        instructions.append(
+            ExpertDownProjFused(
+                layer_idx=layer_idx,
+                start_block_idx=start_block,
+                end_block_idx=start_block + len(sliced_jobs),
+                reduction_block_idx=col_idx,
+            )
         )
-    ]
+
+        num_assigned_jobs += len(sliced_jobs)
+
+    return instructions
 
 
 def schedule_lm_head(globs: MixtralGlobals) -> list[Mixtral_RMS_LM_Head]:
