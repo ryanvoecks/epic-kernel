@@ -28,6 +28,19 @@ template <typename Config, typename Globals> struct rms_router_upgate {
     static constexpr int opcode = OPCODE_RmsRouterUpgate;
     static constexpr int EXPECTED_OPROJ_ARRIVALS = Globals::hidden_dim / Globals::matvec_block_size;
 
+    // Expert routing info stored in scratch memory (after output pipeline scratch).
+    // This avoids a global memory round-trip for expert indices within this SM.
+    static constexpr int EXPERT_SCRATCH_OFFSET =
+        3 /* OUTPUT_PIPELINE_STAGES */ * 16 * sizeof(float) * Config::NUM_CONSUMER_WARPS;
+    struct expert_routing_info {
+        int indices[Globals::num_experts_per_tok];
+    };
+    __device__ static inline expert_routing_info *
+    get_routing_info(megakernel::state<Config> &s) {
+        return reinterpret_cast<expert_routing_info *>(
+            (uint8_t *)s.scratch() + EXPERT_SCRATCH_OFFSET);
+    }
+
     struct parsed_instruction {
         int layer_idx, start_block_idx, num_blocks, iters;
         __device__ inline parsed_instruction(
@@ -62,8 +75,8 @@ template <typename Config, typename Globals> struct rms_router_upgate {
             int block_offset = within_expert / 2;
             int block_idx = inst.start_block_idx + block_offset;
 
-            // Get selected expert index at runtime
-            int expert_idx = g.selected_expert_indices.raw_ptr[expert_loop];
+            // Get selected expert index from scratch (written by consumer on this SM)
+            int expert_idx = get_routing_info(s)->indices[expert_loop];
             int depth = inst.layer_idx * Globals::num_experts + expert_idx;
 
             if (within_expert % 2 == 0) {
@@ -95,7 +108,7 @@ template <typename Config, typename Globals> struct rms_router_upgate {
             auto prev_output_stage = prev_output_idx % pipeline::OUTPUT_PIPELINE_STAGES;
 
             int block_idx = inst.start_block_idx + true_output_idx;
-            int expert_idx = g.selected_expert_indices.raw_ptr[expert_loop];
+            int expert_idx = get_routing_info(s)->indices[expert_loop];
 
             uint8_t *output_scratch_start =
                 pipeline::get_output_start(s, output_stage);
@@ -334,6 +347,11 @@ template <typename Config, typename Globals> struct rms_router_upgate {
                     }
 
                     float top2_sum = probs[idx0] + probs[idx1];
+                    // Write to scratch for loader/storer on this SM
+                    auto *routing = get_routing_info(s);
+                    routing->indices[0] = idx0;
+                    routing->indices[1] = idx1;
+                    // Write to gmem for cross-SM consumers (expert_downproj_fused)
                     g.selected_expert_indices.raw_ptr[0] = idx0;
                     g.selected_expert_indices.raw_ptr[1] = idx1;
                     g.selected_expert_scores.raw_ptr[0] = __float2bfloat16(probs[idx0] / top2_sum);
