@@ -12,6 +12,7 @@ from megakernels.mixtral.instructions import (
     Mixtral_RMS_LM_Head,
     MixtralGlobals,
     RmsRouterUpgate,
+    SpeculativeExpertPredict,
 )
 from megakernels.mixtral.model import MixtralForCausalLM
 from megakernels.scheduler import DAG_Node, ScheduleBuilder
@@ -126,6 +127,9 @@ def make_globals(
         selected_expert_scores=torch.zeros(
             config.num_experts_per_tok, device=device, dtype=dtype
         ),
+        predicted_expert_indices=torch.zeros(
+            config.num_experts_per_tok, dtype=torch.int32, device=device
+        ),
         # MoE stacked weights
         router_weights=sp.router_weight,
         expert_gate_weights=sp.expert_gate,
@@ -221,6 +225,13 @@ def schedule_expert_downproj_fused(
     return instructions
 
 
+def schedule_speculative_predict(
+    globs: MixtralGlobals, layer_idx: int
+) -> list[SpeculativeExpertPredict]:
+    """Single lightweight instruction per layer to predict top-2 experts."""
+    return [SpeculativeExpertPredict(layer_idx=layer_idx)]
+
+
 def schedule_lm_head(globs: MixtralGlobals) -> list[Mixtral_RMS_LM_Head]:
     num_logit_blocks = assert_div(globs.vocab_size, globs.lm_head_block_size)
     num_col_splits = globs.hidden_size // 2048
@@ -302,6 +313,12 @@ def make_dag_layer(
             qkv_deps[(layer_idx, ins.opcode(), block_idx)] = node
 
     new_nodes.extend(qkv_nodes)
+
+    # --- Speculative Expert Prediction (runs concurrently with attention) ---
+    predict_instructions = schedule_speculative_predict(globs, layer_idx)
+    predict_nodes = [DAG_Node(ins, prev_layer_outputs) for ins in predict_instructions]
+    new_nodes.extend(predict_nodes)
+
     if stop_after_op == "qkv":
         return new_nodes, qkv_nodes
 

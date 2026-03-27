@@ -36,6 +36,9 @@ class MixtralGlobals(BaseGlobals):
     selected_expert_indices: Tensor  # [num_experts_per_tok] int32
     selected_expert_scores: Tensor   # [num_experts_per_tok] bfloat16
 
+    # Speculative expert prediction (written by SpeculativeExpertPredict, read by RmsRouterUpgate loader)
+    predicted_expert_indices: Tensor  # [num_experts_per_tok] int32
+
     # MoE stacked weights
     router_weights: Tensor           # [num_layers, num_experts, hidden_size]
     expert_gate_weights: Tensor      # [num_layers, num_experts, intermediate_size, hidden_size]
@@ -265,3 +268,30 @@ class Mixtral_RMS_LM_Head(Instruction):
             * globs.lm_head_block_size
             * globs.hidden_size
         )
+
+
+# ---------------------------------------------------------------------------
+# Opcode 8 — SpeculativeExpertPredict
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SpeculativeExpertPredict(Instruction):
+    """Predict top-2 expert indices using pre-attention residual.
+
+    Runs concurrently with attention. Uses hidden_states (before QKV/OProj
+    modifies it) + ffn_ln_weights + router_weights to predict which experts
+    will be selected, allowing the RmsRouterUpgate loader to prefetch expert
+    weights early.
+    """
+    layer_idx: int
+
+    @classmethod
+    def opcode(cls) -> int:
+        return 8
+
+    @classmethod
+    def prev_opcode(cls) -> int:
+        return ExpertDownProjFused.opcode()  # Same as QKV — depends on prev layer
+
+    def cost(self, globs: MixtralGlobals) -> float:
+        return globs.num_experts * globs.hidden_size

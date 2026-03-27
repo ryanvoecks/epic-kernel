@@ -45,20 +45,21 @@ INSTRUCTION_MAP = {
     5: "RMS Router Upgate",
     6: "Expert Down Proj Fused",
     7: "LM Head",
+    8: "Speculative Expert Predict",
 }
 
 # Choose a color palette (using Category10, mapping known types)
-palette = (
-    Category10[max(INSTRUCTION_MAP.keys())] if max(INSTRUCTION_MAP.keys()) > 0 else []
-)
+palette = Category10[10]
 COLOR_MAP = {
     0: "#808080",  # Dark Grey for No Op
-    1: palette[0] if len(palette) > 0 else "#1f77b4",
-    2: palette[1] if len(palette) > 1 else "#ff7f0e",
-    3: palette[2] if len(palette) > 2 else "#2ca02c",
-    4: palette[3] if len(palette) > 3 else "#d62728",
-    5: palette[4] if len(palette) > 4 else "#9467bd",
-    6: palette[5] if len(palette) > 5 else "#8c564b",
+    1: palette[0],
+    2: palette[1],
+    3: palette[2],
+    4: palette[3],
+    5: palette[4],
+    6: palette[5],
+    7: palette[6],
+    8: palette[7],  # Speculative Expert Predict
 }
 
 # --- Event Mapping ---

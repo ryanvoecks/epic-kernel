@@ -27,6 +27,7 @@ from megakernels.mixtral.instructions import (
     Mixtral_RMS_LM_Head,
     MixtralGlobals,
     RmsRouterUpgate,
+    SpeculativeExpertPredict,
 )
 
 
@@ -348,6 +349,28 @@ def solve_lm_head(globs: MixtralGlobals, ins: Mixtral_RMS_LM_Head):
 # Instruction → Solver map
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Opcode 8 — SpeculativeExpertPredict
+# ---------------------------------------------------------------------------
+
+def solve_speculative_expert_predict(globs: MixtralGlobals, ins: SpeculativeExpertPredict):
+    layer_idx = ins.layer_idx
+    if layer_idx > 0:
+        op_barriers = globs.barriers[layer_idx - 1, ExpertDownProjFused.opcode() - 1]
+        assert op_barriers[0] == _expected_downproj_barrier(globs)
+
+    normed = rms_norm(
+        inp=globs.hidden_states,
+        weight=globs.ffn_ln_weights[layer_idx],
+        eps=globs.rms_norm_eps,
+    )
+    router_logits = globs.router_weights[layer_idx].float() @ normed.float()
+    scores = torch.softmax(router_logits, dim=-1)
+    _, top_indices = torch.topk(scores, globs.num_experts_per_tok)
+    globs.predicted_expert_indices.copy_(top_indices.to(torch.int32))
+    globs.barriers[layer_idx, ins.opcode() - 1][0] += 1
+
+
 INSTRUCTION_TO_SOLVER = {
     Mixtral_QKV: solve_qkv,
     Mixtral_PartialAttn: solve_partial_attn,
@@ -356,4 +379,5 @@ INSTRUCTION_TO_SOLVER = {
     RmsRouterUpgate: solve_rms_router_upgate,
     ExpertDownProjFused: solve_expert_downproj_fused,
     Mixtral_RMS_LM_Head: solve_lm_head,
+    SpeculativeExpertPredict: solve_speculative_expert_predict,
 }
