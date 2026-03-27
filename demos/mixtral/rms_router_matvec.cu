@@ -407,26 +407,46 @@ template <typename Config, typename Globals> struct rms_router_upgate {
 
             kittens::group<Config::NUM_CONSUMER_WARPS>::sync(1);
 
-            // Only warp 0 computes router dot products
-            if (kittens::warpid() == 0) {
-                float logits[Globals::num_experts];
+            // All warps compute router dot product partials over their chunk
+            {
+                float partial_dots[Globals::num_experts];
                 int lane = kittens::laneid();
+                int chunk_start = kittens::warpid() * CHUNK;
 
                 for (int e = 0; e < Globals::num_experts; e++) {
                     float dot = 0.f;
                     int row_base = (inst.layer_idx * Globals::num_experts + e) *
                                    Globals::hidden_dim;
-                    for (int i = lane; i < Globals::hidden_dim; i += 32) {
-                        float nv = float(g.router_normed_hidden.raw_ptr[i]);
-                        float wv = float(g.router_weights.raw_ptr[row_base + i]);
+                    for (int i = lane; i < CHUNK; i += 32) {
+                        float nv = float(g.router_normed_hidden.raw_ptr[chunk_start + i]);
+                        float wv = float(g.router_weights.raw_ptr[row_base + chunk_start + i]);
                         dot += nv * wv;
                     }
                     for (int mask = 16; mask >= 1; mask >>= 1)
                         dot += __shfl_xor_sync(0xffffffff, dot, mask);
-                    logits[e] = dot;
+                    partial_dots[e] = dot;
                 }
 
-                if (lane == 0) {
+                // Write partials to scratch: layout [expert][warpid]
+                float *scratch = (float *)s.scratch();
+                if (kittens::laneid() == 0) {
+                    for (int e = 0; e < Globals::num_experts; e++) {
+                        scratch[e * Config::NUM_CONSUMER_WARPS + kittens::warpid()] = partial_dots[e];
+                    }
+                }
+                kittens::group<Config::NUM_CONSUMER_WARPS>::sync(2);
+
+                // Warp 0, lane 0 reduces partials and does softmax + top-2
+                if (kittens::warpid() == 0 && kittens::laneid() == 0) {
+                    float logits[Globals::num_experts];
+                    for (int e = 0; e < Globals::num_experts; e++) {
+                        float sum = 0.f;
+                        for (int w = 0; w < Config::NUM_CONSUMER_WARPS; w++) {
+                            sum += scratch[e * Config::NUM_CONSUMER_WARPS + w];
+                        }
+                        logits[e] = sum;
+                    }
+
                     float max_val = logits[0];
                     for (int e = 1; e < Globals::num_experts; e++)
                         max_val = fmaxf(max_val, logits[e]);
@@ -452,7 +472,6 @@ template <typename Config, typename Globals> struct rms_router_upgate {
                     g.selected_expert_scores.raw_ptr[0] = __float2bfloat16(probs[idx0] / top2_sum);
                     g.selected_expert_scores.raw_ptr[1] = __float2bfloat16(probs[idx1] / top2_sum);
                 }
-                kittens::warp::sync();
             }
 
             // All warps sync + fence so all warps see router outputs
