@@ -18,7 +18,7 @@ from megakernels.scheduler import assign_to_sms, tensorize_instructions
 
 # Local path to downloaded model weights — avoids any HF home cache writes.
 MODEL = "/data/models/of222/hub/models--mistralai--Mixtral-8x7B-Instruct-v0.1/snapshots/eba92302a2861cdc0098cc54bc9f17cb2c47eb61"
-DEVICE = "cuda:0"
+DEVICE = "cuda:4"
 PROMPT = "tell me a joke about a cookie"
 NTOK = 100
 SETTING = "mixtral_latency"

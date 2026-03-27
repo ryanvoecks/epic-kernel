@@ -618,24 +618,14 @@ template <typename Config, typename Globals> struct expert_downproj_fused {
                             s.pages[weight_page].ptr())
                             [warpid % WARPS_PER_PAGE];
 
-                    // Load this warp's RDPW-element activation slice via the
-                    // activation page (shared memory), ensuring correct TK
-                    // register layout.  The activation page is 16KB, and we
-                    // need 16 × sv_bf<RDPW> = 16 × 128 = 2048 bytes — fits.
+                    // Load this warp's RDPW-element activation slice directly
+                    // from global memory into registers, bypassing shared memory.
+                    // act_col is in element units; coord<rv_fl<RDPW>> expects
+                    // column in units of RDPW (unit_coord scales by rv::length).
                     int act_col = t * STAGE_COLS + warpid * RDPW;
                     kittens::rv_fl<RDPW> act_vec;
-                    {
-                        int act_page = get_activation_page(s);
-                        kittens::sv_bf<RDPW> &act_smem =
-                            reinterpret_cast<kittens::sv_bf<RDPW> *>(
-                                s.pages[act_page].ptr())[warpid];
-                        kittens::warp::load(
-                            act_smem, g.expert_silu_out,
-                            coord<>{0, 0, expert_idx, act_col});
-                        kittens::warp::sync();
-                        kittens::warp::load(act_vec, act_smem);
-                        kittens::warp::sync();
-                    }
+                    kittens::warp::load(act_vec, g.expert_silu_out,
+                                        coord<kittens::rv_fl<RDPW>>{0, 0, expert_idx, act_col / RDPW});
 
                     // Compute matvec: warp_scratch = weights @ act_vec
                     // This overwrites warp_scratch with the partial sum for
