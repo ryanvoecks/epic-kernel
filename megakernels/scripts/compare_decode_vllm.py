@@ -111,7 +111,7 @@ def run_megakernel(output_len: int, gpu: int, hf_model: str, setting: str, num_w
 
 def main():
     parser = argparse.ArgumentParser(description="MegaKernel vs vLLM decode latency sweep (batch_size=1)")
-    parser.add_argument("--gpu", type=int, default=0, help="GPU index (default: 0)")
+    parser.add_argument("--gpu", type=int, default=None, help="GPU index (default: auto-select free GPU)")
     parser.add_argument(
         "--model",
         choices=list(MODEL_CONFIGS.keys()),
@@ -139,6 +139,14 @@ def main():
     hf_model = cfg["hf_model"]
     setting = cfg["setting"]
     output_lens = args.output_lens if args.output_lens is not None else DEFAULT_OUTPUT_LENS
+
+    if args.gpu is None:
+        from megakernels.utils import get_free_gpu
+        free = get_free_gpu()
+        if free is None:
+            raise SystemExit("No free GPUs available.")
+        args.gpu = int(free.split(":")[1])
+        print(f"Auto-selected free GPU: {args.gpu}", flush=True)
 
     if args.output is None:
         args.output = f"megakernels/scripts/outputs/decode_comparison_{args.model}.png"
