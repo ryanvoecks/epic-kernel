@@ -9,6 +9,7 @@
 #include "rms_router_matvec.cu"
 #include "expert_downproj.cu"
 #include "rms_lm_head.cu"
+#include "speculative_expert_predict.cu"
 
 #include "pyutils/pyutils.cuh"
 
@@ -22,6 +23,7 @@ using o_proj_op                 = o_proj<config, mixtral_globals>;
 using rms_router_upgate_op      = rms_router_upgate<config, mixtral_globals>;
 using expert_downproj_fused_op  = expert_downproj_fused<config, mixtral_globals>;
 using rms_lm_head_op            = rms_lm_head<config, mixtral_globals>;
+using speculative_expert_predict_op = speculative_expert_predict<config, mixtral_globals>;
 
 PYBIND11_MODULE(mk_mixtral, m)
 {
@@ -34,7 +36,8 @@ PYBIND11_MODULE(mk_mixtral, m)
            o_proj_op,
            rms_router_upgate_op,
            expert_downproj_fused_op,
-           rms_lm_head_op>>(
+           rms_lm_head_op,
+           speculative_expert_predict_op>>(
         m, "mk_mixtral",
 
         // Megakernel internals (in struct field order)
@@ -79,6 +82,9 @@ PYBIND11_MODULE(mk_mixtral, m)
         // Router runtime outputs
         &mixtral_globals::selected_expert_indices,
         &mixtral_globals::selected_expert_scores,
+
+        // Speculative expert prediction
+        &mixtral_globals::predicted_expert_indices,
 
         // Scalar constants
         &mixtral_globals::pos_id,

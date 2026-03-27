@@ -256,6 +256,39 @@ template <typename Config, typename Globals> struct rms_router_upgate {
                 kittens::tma::load_async<cache_policy::EVICT_LAST>(
                     rms_smem, g.ffn_ln_weights, {inst.layer_idx, 0}, sem);
 
+                // Read speculative expert prediction (NO spin wait — just load
+                // from gmem; the prediction instruction ran during attention)
+                int pred_idx0 = g.predicted_expert_indices.raw_ptr[0];
+                int pred_idx1 = g.predicted_expert_indices.raw_ptr[1];
+
+                // Prefetch up/gate weight tiles for all blocks and inner tiles
+                // for each predicted expert into L2 cache.
+                auto &weight_template =
+                    reinterpret_cast<kittens::st_bf<16, pipeline::TILE_WIDTH> &>(
+                        s.pages[activation_page]);
+
+                for (int e = 0; e < Globals::num_experts_per_tok; e++) {
+                    int expert_idx = (e == 0) ? pred_idx0 : pred_idx1;
+                    int depth = inst.layer_idx * Globals::num_experts + expert_idx;
+                    for (int b = 0; b < inst.num_blocks; b++) {
+                        int block_idx = inst.start_block_idx + b;
+                        for (int tile_batch = 0; tile_batch < INNER_TILES; tile_batch++) {
+                            for (int p = 0; p < pipeline::STAGE_PAGES; p++) {
+                                int col_coord = tile_batch * pipeline::STAGE_PAGES + p;
+                                kittens::tma::prefetch<dim::ROW, cache_policy::EVICT_FIRST>(
+                                    weight_template, g.expert_up_weights,
+                                    {0, depth, block_idx, col_coord});
+                            }
+                            for (int p = 0; p < pipeline::STAGE_PAGES; p++) {
+                                int col_coord = tile_batch * pipeline::STAGE_PAGES + p;
+                                kittens::tma::prefetch<dim::ROW, cache_policy::EVICT_FIRST>(
+                                    weight_template, g.expert_gate_weights,
+                                    {0, depth, block_idx, col_coord});
+                            }
+                        }
+                    }
+                }
+
                 // Wait for the consumer to finish computing the router and
                 // writing selected_expert_indices/scores. The pipeline's
                 // load_iter reads these indices to determine which expert's

@@ -83,6 +83,9 @@ def interpret_with_mk(globs: MixtralGlobals, mk_func):
         globs.selected_expert_indices,
         globs.selected_expert_scores,
 
+        # Speculative expert prediction
+        globs.predicted_expert_indices,
+
         # Scalar constants
         globs.pos_id,
         globs.attn_scale,

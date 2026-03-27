@@ -14,6 +14,7 @@
 #define OPCODE_RmsRouterUpgate      5
 #define OPCODE_ExpertDownProjFused  6
 #define OPCODE_RMS_LM_Head          7
+#define OPCODE_SpeculativeExpertPredict 8
 
 // ---------------------------------------------------------------------------
 // Architecture constants
@@ -192,6 +193,9 @@ struct globals_t {
     sel_indices_t    selected_expert_indices;
     sel_scores_t     selected_expert_scores;
 
+    // Speculative expert prediction (written by SpeculativeExpertPredict, read by RmsRouterUpgate loader)
+    sel_indices_t    predicted_expert_indices;
+
     // Scalar constants
     unsigned int     pos_id;
     float            attn_scale;
@@ -231,3 +235,6 @@ struct expert_downproj_fused;
 
 template <typename config = config, typename globals = mixtral_globals>
 struct rms_lm_head;
+
+template <typename config = config, typename globals = mixtral_globals>
+struct speculative_expert_predict;
