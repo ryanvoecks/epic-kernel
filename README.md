@@ -10,11 +10,9 @@ This project extends the [ThunderKittens](https://github.com/HazyResearch/Thunde
 
 **GEMV load ordering.** We reorder the sequence in which weight tiles are issued to TMA so that consecutive loads hit different L2 cache partitions, reducing bank conflicts and improving effective bandwidth.
 
-**Cluster-aware instruction scheduling.** A DAG-based scheduler assigns instructions to SMs with awareness of data locality and cost. Strategies include pool-based separation of memory-bound and compute-bound instructions, zigzag SM assignment for cache locality, and wave scheduling that groups operations by opcode.
+**L2 prefetching overlapped with prior instructions.** After issuing a TMA load for the current weights, the loader immediately fires a `cp.async.bulk.prefetch.tensor` for the *next* instruction's weights into L2. Because the megakernel controls the full instruction stream, prefetches can be scheduled to overlap with the consumer phase of the previous instruction, converting HBM-latency stalls into L2-latency loads. This yields 5--8% speedup for Llama 3B while being less effective for the smaller 1B model.
 
-**L2 prefetching overlapped with prior instructions.** After issuing a TMA load for the current weights, the loader immediately fires a `cp.async.bulk.prefetch.tensor` for the *next* instruction's weights into L2. Because the megakernel controls the full instruction stream, prefetches can be scheduled to overlap with the consumer phase of the previous instruction, converting HBM-latency stalls into L2-latency loads. This yields 5--8% speedup on shorter contexts.
-
-**3B model support.** We add Llama 3.2 3B alongside the existing 1B and 8B configurations. The 3B model sits at an interesting point in the design space: large enough to be memory-bound on GEMV but small enough that scheduling and prefetch decisions have outsized impact, making it a useful vehicle for contrasting the effect of each optimisation.
+**3B model support.** We add Llama 3.2 3B alongside the existing 1B configurations. The 3B model sits at an interesting point in the design space: large enough to be memory-bound on GEMV but small enough that scheduling and prefetch decisions have outsized impact, making it a useful vehicle for contrasting the effect of optimisations.
 
 **Mixtral 8x7B MoE for batch-1 inference.** We implement a full Mixtral megakernel optimised for single-request latency. The MoE layer fuses router scoring, expert selection, up/gate projection, and down projection into megakernel instructions with minimal intermediate buffer traffic. Expert down-projections for both selected experts are fused into a single instruction to reduce HBM writes.
 
