@@ -18,7 +18,12 @@ mk_llama:
 mk_llama_3b:
 	$(MAKE) -C demos/low-latency-llama mk_llama_3b
 
+mk_mixtral:
+	$(MAKE) -C demos/mixtral mk_mixtral
+	$(MAKE) -C demos/mixtral mk_mixtral_small
+
 # Clean target
 clean:
 	$(MAKE) -C demos/low-latency-llama clean
 	$(MAKE) -C demos/low-latency-llama-3b clean
+	$(MAKE) -C demos/mixtral clean
