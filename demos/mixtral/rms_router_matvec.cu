@@ -114,6 +114,35 @@ template <typename Config, typename Globals> struct rms_router_upgate {
             }
         }
 
+        template <int TW>
+        static __device__ inline void
+        prefetch_iter(megakernel::state<Config> &s, const Globals &g,
+                      parsed_instruction &inst, int iter, int col_idx,
+                      kittens::st_bf<16, TW> &weight_chunk) {
+            int outer_iter = iter / INNER_TILES;
+            int tile_batch = iter % INNER_TILES;
+
+            int expert_loop = outer_iter / (2 * inst.num_blocks);
+            int within_expert = outer_iter % (2 * inst.num_blocks);
+            int block_offset = within_expert / 2;
+            int block_idx = inst.start_block_idx + block_offset;
+
+            int expert_idx = get_routing_info(s)->indices[expert_loop];
+            int depth = inst.layer_idx * Globals::num_experts + expert_idx;
+
+            int col_coord = tile_batch * pipeline::STAGE_PAGES + col_idx;
+
+            if (within_expert % 2 == 0) {
+                kittens::tma::prefetch<dim::ROW, cache_policy::EVICT_FIRST>(
+                    weight_chunk, g.expert_up_weights,
+                    {0, depth, block_idx, col_coord});
+            } else {
+                kittens::tma::prefetch<dim::ROW, cache_policy::EVICT_FIRST>(
+                    weight_chunk, g.expert_gate_weights,
+                    {0, depth, block_idx, col_coord});
+            }
+        }
+
         static __device__ inline void store(megakernel::state<Config> &s,
                                             const Globals &g,
                                             parsed_instruction &inst,
@@ -276,6 +305,21 @@ template <typename Config, typename Globals> struct rms_router_upgate {
 
                         pipeline_specifics::load_iter(
                             s, g, inst, iter, i, weight_chunk, sem);
+                    }
+
+                    // Prefetch next iteration's weights into L2
+                    {
+                        int prefetch_iter = iter + 1;
+                        if (prefetch_iter < inst.loader_iters) {
+#pragma unroll
+                            for (int i = 0; i < pipeline::STAGE_PAGES; i++) {
+                                auto &weight_chunk =
+                                    reinterpret_cast<kittens::st_bf<16, pipeline::TILE_WIDTH> &>(
+                                        s.pages[pipeline::get_weight_page(s, input_stage, i)]);
+                                pipeline_specifics::prefetch_iter(
+                                    s, g, inst, prefetch_iter, i, weight_chunk);
+                            }
+                        }
                     }
 
                     input_stage = (input_stage + 1) % pipeline::INPUT_PIPELINE_STAGES;
